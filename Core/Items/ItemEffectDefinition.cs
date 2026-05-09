@@ -1,0 +1,16 @@
+namespace Axe2DEditor.Core.Items;
+
+public sealed class ItemEffectDefinition
+{
+    public string Id { get; set; } = "";
+
+    public string DisplayName { get; set; } = "";
+
+    public string DisplayNameKey { get; set; } = "";
+
+    public string Description { get; set; } = "";
+
+    public string DescriptionKey { get; set; } = "";
+
+    public bool BuiltIn { get; set; }
+}

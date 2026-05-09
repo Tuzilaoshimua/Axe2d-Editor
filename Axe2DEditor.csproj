@@ -1,0 +1,49 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <DefaultItemExcludes>$(DefaultItemExcludes);buildobj\**;obj\temp\**;obj2\**;buildtmp\**;verify-build\**;verify-build-2\**;verify-build-3\**;verify-build-4\**;verify-build-5\**;verify-build-6\**;_verify_build*\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="obj\**;obj2\**;buildobj\**;buildtmp\**;verify-build\**;verify-build-2\**;verify-build-3\**;verify-build-4\**;verify-build-5\**;verify-build-6\**;_verify_build*\**;._verify\**" />
+    <EmbeddedResource Remove="obj\**;obj2\**;buildobj\**;buildtmp\**;verify-build\**;verify-build-2\**;verify-build-3\**;verify-build-4\**;verify-build-5\**;verify-build-6\**;_verify_build*\**;._verify\**" />
+    <None Remove="obj\**;obj2\**;buildobj\**;buildtmp\**;verify-build\**;verify-build-2\**;verify-build-3\**;verify-build-4\**;verify-build-5\**;verify-build-6\**;_verify_build*\**;._verify\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Locales\*.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Editor\Modules\DataEditorForm.Designer.cs">
+      <DependentUpon>DataEditorForm.cs</DependentUpon>
+    </Compile>
+    <EmbeddedResource Update="Editor\Modules\DataEditorForm.resx">
+      <DependentUpon>DataEditorForm.cs</DependentUpon>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\Resources.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\Resources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
