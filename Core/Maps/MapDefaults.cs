@@ -218,19 +218,26 @@ public static class MapDefaults
             return string.Empty;
         }
 
-        if (string.Equals(variant, RpgMakerA1RegionVariants.Decor, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(variant, RpgMakerA1RegionVariants.Ocean, StringComparison.OrdinalIgnoreCase))
         {
-            return RpgMakerA1RegionVariants.Decor;
+            return RpgMakerA1RegionVariants.Ocean;
         }
 
-        if (string.Equals(variant, RpgMakerA1RegionVariants.Waterfall, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(variant, RpgMakerA1RegionVariants.DeepSea, StringComparison.OrdinalIgnoreCase))
+        {
+            return RpgMakerA1RegionVariants.DeepSea;
+        }
+
+        if (string.Equals(variant, RpgMakerA1RegionVariants.OceanDecor, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(variant, "Decor", StringComparison.OrdinalIgnoreCase))
+        {
+            return RpgMakerA1RegionVariants.OceanDecor;
+        }
+
+        if (string.Equals(variant, RpgMakerA1RegionVariants.Waterfall, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(variant, "Frame", StringComparison.OrdinalIgnoreCase))
         {
             return RpgMakerA1RegionVariants.Waterfall;
-        }
-
-        if (string.Equals(variant, RpgMakerA1RegionVariants.Frame, StringComparison.OrdinalIgnoreCase))
-        {
-            return RpgMakerA1RegionVariants.Frame;
         }
 
         return RpgMakerA1RegionVariants.Water;

@@ -209,6 +209,12 @@ public sealed class MapEditorForm : Form
         }
 
         _shiftAutoTerrainMode = enabled;
+        if (enabled && _selectedTilesetTile.X >= 0 && IsA1OverlayTile(_selectedTilesetTile.X, _selectedTilesetTile.Y))
+        {
+            _shiftTerrain = FindPlannedAutoTerrain(_selectedTilesetTile.X, _selectedTilesetTile.Y);
+            _canvas.SetShiftTerrain(_shiftTerrain);
+        }
+
         _tilesetPalette.ShowShiftAutoTerrainMode = enabled;
         _canvas.SetShiftAutoTerrainMode(enabled);
         UpdateStatusText();
@@ -1007,43 +1013,57 @@ public sealed class MapEditorForm : Form
     {
         _selectedTilesetTile = new Point(tileX, tileY);
         _tilesetPalette.SelectedTile = _selectedTilesetTile;
+        var isA1OverlayTile = IsA1OverlayTile(tileX, tileY);
+        var isA1OverlayAnimated = IsA1AnimatedOverlayTile(tileX, tileY);
         if (useAsBrush)
         {
-            if (_shiftAutoTerrainMode)
+            if (isA1OverlayTile && !_shiftAutoTerrainMode)
             {
-                var selectedTerrain = FindPlannedAutoTerrain(tileX, tileY);
-                if (selectedTerrain is not null)
-                {
-                    SelectTerrain(selectedTerrain.Id);
-                    _shiftTerrain = selectedTerrain;
-                    _canvas.SetShiftTerrain(_shiftTerrain);
-                    _canvas.SetTilesetSelection(tileX, tileY, width, height, false, false);
-                    _canvas.UseTerrainBrush();
-                }
-                else
-                {
-                    _shiftTerrain = null;
-                    _canvas.SetShiftTerrain(_shiftTerrain);
-                    _canvas.SetTilesetSelection(tileX, tileY, width, height, false, false);
-                    _canvas.UseTilesetBrush();
-                }
+                _shiftTerrain = FindPlannedAutoTerrain(tileX, tileY);
+                _canvas.SetShiftTerrain(_shiftTerrain);
+                _canvas.SetTilesetSelection(tileX, tileY, 1, 1, isA1Overlay: true, isA1OverlayAnimated: isA1OverlayAnimated);
+                _canvas.UseTilesetBrush();
+                _selectedTerrain = null;
+                _canvas.SetSelectedTerrain(null);
+            }
+            else if (TrySelectPlannedAutoTerrain(tileX, tileY))
+            {
+                _shiftTerrain = _selectedTerrain;
+                _canvas.SetShiftTerrain(_shiftTerrain);
+                _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
+                _canvas.UseTerrainBrush();
             }
             else
             {
                 _shiftTerrain = null;
                 _canvas.SetShiftTerrain(_shiftTerrain);
-                _canvas.SetTilesetSelection(tileX, tileY, width, height, false, false);
+                _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
                 _canvas.UseTilesetBrush();
             }
         }
         else
         {
-            _canvas.SetTilesetSelection(tileX, tileY, width, height, false, false);
+            _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
         }
 
         UpdateTilesetInfo();
         UpdateA2Highlight();
         UpdateBrushButtons();
+    }
+
+    private bool IsA1OverlayTile(int tileX, int tileY)
+    {
+        return FindPlannedRegion(tileX, tileY) is { } region
+            && string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(region.Variant, RpgMakerA1RegionVariants.OceanDecor, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(region.Variant, RpgMakerA1RegionVariants.Waterfall, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsA1AnimatedOverlayTile(int tileX, int tileY)
+    {
+        return FindPlannedRegion(tileX, tileY) is { } region
+            && string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(region.Variant, RpgMakerA1RegionVariants.Waterfall, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool TrySelectPlannedAutoTerrain(int tileX, int tileY)
@@ -1078,8 +1098,7 @@ public sealed class MapEditorForm : Form
             var blockHeight = GetA1RegionBlockHeight(region);
             var blockX = region.X + (tileX - region.X) / blockWidth * blockWidth;
             var blockY = region.Y + (tileY - region.Y) / blockHeight * blockHeight;
-            var isWaterfall = IsA1WaterfallLike(region);
-            terrainId = CreateA1TerrainId(blockX, blockY, isWaterfall);
+            terrainId = CreateA1TerrainId(blockX, blockY, region);
         }
         else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase))
         {
@@ -1770,12 +1789,21 @@ public sealed class MapEditorForm : Form
         var a2Origins = EnumerateA2Origins(map.TilesetPlan)
             .Distinct()
             .ToList();
+        foreach (var origin in a1Origins)
+        {
+            var sourceRegion = FindA1RegionForOrigin(map.TilesetPlan, origin);
+            var newId = CreateA1TerrainId(origin.X, origin.Y, sourceRegion);
+            foreach (var legacyId in LegacyA1TerrainIds(origin.X, origin.Y))
+            {
+                ReplaceTerrainReferences(map, legacyId, newId);
+            }
+        }
+
         var expectedIds = a1Origins
             .Select(v =>
             {
                 var sourceRegion = FindA1RegionForOrigin(map.TilesetPlan, v);
-                var isWaterfall = sourceRegion is not null && IsA1WaterfallLike(sourceRegion);
-                return CreateA1TerrainId(v.X, v.Y, isWaterfall);
+                return CreateA1TerrainId(v.X, v.Y, sourceRegion);
             })
             .Concat(a2Origins.Select(v => CreateA2TerrainId(v.X, v.Y)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -1792,23 +1820,29 @@ public sealed class MapEditorForm : Form
         {
             var sourceRegion = FindA1RegionForOrigin(map.TilesetPlan, origin);
             var isWaterfall = sourceRegion is not null && IsA1WaterfallLike(sourceRegion);
-            var id = CreateA1TerrainId(origin.X, origin.Y, isWaterfall);
+            var id = CreateA1TerrainId(origin.X, origin.Y, sourceRegion);
             var terrain = map.Terrains.FirstOrDefault(v => string.Equals(v.Id, id, StringComparison.OrdinalIgnoreCase));
             if (terrain is null)
             {
                 terrain = new MapTerrainDefinition
                 {
                     Id = id,
-                    DisplayName = $"A1动态 {origin.X},{origin.Y}",
+                    DisplayName = A1TerrainDisplayName(sourceRegion, origin),
                     ColorHex = "#3b82f6",
                     EdgeColorHex = "#1d4ed8"
                 };
                 map.Terrains.Add(terrain);
             }
+            else
+            {
+                terrain.DisplayName = A1TerrainDisplayName(sourceRegion, origin);
+            }
 
             terrain.Rule = MapDefaults.RuleRpgMakerA1;
             var isAnimated = sourceRegion is not null
                 && (isWaterfall
+                    || string.Equals(sourceRegion.Variant, RpgMakerA1RegionVariants.Ocean, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(sourceRegion.Variant, RpgMakerA1RegionVariants.DeepSea, StringComparison.OrdinalIgnoreCase)
                     || string.Equals(sourceRegion.Variant, RpgMakerA1RegionVariants.Water, StringComparison.OrdinalIgnoreCase));
             terrain.Animated = isAnimated;
             terrain.AnimationFrames = isAnimated ? (isWaterfall ? 3 : 4) : 1;
@@ -1884,8 +1918,20 @@ public sealed class MapEditorForm : Form
 
     private static bool IsA1WaterfallLike(TilesetRegionDefinition region)
     {
-        return string.Equals(region.Variant, RpgMakerA1RegionVariants.Waterfall, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(region.Variant, RpgMakerA1RegionVariants.Frame, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(region.Variant, RpgMakerA1RegionVariants.Waterfall, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string A1TerrainDisplayName(TilesetRegionDefinition? region, Point origin)
+    {
+        var label = region?.Variant switch
+        {
+            RpgMakerA1RegionVariants.Ocean => "A海洋",
+            RpgMakerA1RegionVariants.DeepSea => "B深海",
+            RpgMakerA1RegionVariants.OceanDecor => "C海洋装饰",
+            RpgMakerA1RegionVariants.Waterfall => "E瀑布",
+            _ => "D水面"
+        };
+        return $"A1{label} {origin.X},{origin.Y}";
     }
 
     private static IEnumerable<Point> EnumerateA2Origins(TilesetPlanDefinition plan)
@@ -1910,9 +1956,42 @@ public sealed class MapEditorForm : Form
             || id.StartsWith("terrain.tileset.a2.", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string CreateA1TerrainId(int x, int y, bool waterfall = false)
+    private static string CreateA1TerrainId(int x, int y, TilesetRegionDefinition? region)
     {
-        return waterfall ? $"terrain.tileset.a1.waterfall.{x}.{y}" : $"terrain.tileset.a1.{x}.{y}";
+        var key = region?.Variant switch
+        {
+            RpgMakerA1RegionVariants.Ocean => "ocean",
+            RpgMakerA1RegionVariants.DeepSea => "deepsea",
+            RpgMakerA1RegionVariants.OceanDecor => "decor",
+            RpgMakerA1RegionVariants.Waterfall => "waterfall",
+            _ => "water"
+        };
+        return $"terrain.tileset.a1.{key}.{x}.{y}";
+    }
+
+    private static IEnumerable<string> LegacyA1TerrainIds(int x, int y)
+    {
+        yield return $"terrain.tileset.a1.{x}.{y}";
+        yield return $"terrain.tileset.a1.waterfall.{x}.{y}";
+    }
+
+    private static void ReplaceTerrainReferences(MapDefinition map, string oldId, string newId)
+    {
+        if (string.Equals(oldId, newId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        foreach (var layer in map.Layers)
+        {
+            foreach (var tile in layer.Tiles)
+            {
+                if (string.Equals(tile.TerrainId, oldId, StringComparison.OrdinalIgnoreCase))
+                {
+                    tile.TerrainId = newId;
+                }
+            }
+        }
     }
 
     private static string CreateA2TerrainId(int x, int y)

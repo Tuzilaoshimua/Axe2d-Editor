@@ -5,7 +5,6 @@ namespace Axe2DEditor.Core.Maps;
 public static class RpgMakerAutoTile
 {
     private static readonly int[] A1WaterSurfaceSequence = [0, 1, 2, 1];
-    private const int A1WaterSurfaceFrameCount = 4;
     private const int A1WaterfallFrameCount = 3;
 
     public static bool IsA1(MapTerrainDefinition? terrain)
@@ -50,20 +49,102 @@ public static class RpgMakerAutoTile
             return false;
         }
 
-        if (IsA1Waterfall(terrain))
+        var kind = A1Kind(terrain);
+        if (kind < 0)
         {
-            return DrawA1Waterfall(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, animationFrame);
+            return false;
+        }
+
+        if (kind >= 4 && kind % 2 == 1)
+        {
+            return DrawA1Waterfall(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, animationFrame, kind);
         }
 
         var waterSurfaceIndex = terrain.Animated
             ? A1WaterSurfaceSequence[animationFrame % A1WaterSurfaceSequence.Length]
             : 0;
-        return DrawAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, terrain.TileX + waterSurfaceIndex * 2, terrain.TileY);
+        var block = A1FloorBlock(kind, waterSurfaceIndex);
+        if (kind is 2 or 3)
+        {
+            DrawAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, 0, 0);
+        }
+
+        return DrawAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, block.X, block.Y);
     }
 
-    private static bool IsA1Waterfall(MapTerrainDefinition terrain)
+    private static int A1Kind(MapTerrainDefinition terrain)
     {
-        return terrain.Id.Contains(".waterfall.", StringComparison.OrdinalIgnoreCase);
+        if (terrain.Id.Contains(".ocean.", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (terrain.Id.Contains(".deepsea.", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (terrain.Id.Contains(".decor.", StringComparison.OrdinalIgnoreCase))
+        {
+            return terrain.TileY >= 3 ? 3 : 2;
+        }
+
+        if (terrain.Id.Contains(".waterfall.", StringComparison.OrdinalIgnoreCase))
+        {
+            return FindA1KindByBlock(terrain.TileX, terrain.TileY, waterfall: true);
+        }
+
+        return FindA1KindByBlock(terrain.TileX, terrain.TileY, waterfall: false);
+    }
+
+    private static int FindA1KindByBlock(int tileX, int tileY, bool waterfall)
+    {
+        for (var kind = waterfall ? 5 : 4; kind <= 15; kind += 2)
+        {
+            var block = waterfall ? A1WaterfallBlock(kind, 0) : A1FloorBlock(kind, 0);
+            if (block.X == tileX && block.Y == tileY)
+            {
+                return kind;
+            }
+        }
+
+        return waterfall ? 5 : 4;
+    }
+
+    private static Point A1FloorBlock(int kind, int waterSurfaceIndex)
+    {
+        if (kind == 0)
+        {
+            return new Point(waterSurfaceIndex * 2, 0);
+        }
+
+        if (kind == 1)
+        {
+            return new Point(waterSurfaceIndex * 2, 3);
+        }
+
+        if (kind == 2)
+        {
+            return new Point(6, 0);
+        }
+
+        if (kind == 3)
+        {
+            return new Point(6, 3);
+        }
+
+        var tx = kind % 8;
+        var ty = kind / 8;
+        var bx = tx / 4 * 8 + waterSurfaceIndex * 2;
+        var by = ty * 6 + (tx / 2 % 2) * 3;
+        return new Point(bx, by);
+    }
+
+    private static Point A1WaterfallBlock(int kind, int frame)
+    {
+        var tx = kind % 8;
+        var ty = kind / 8;
+        return new Point(tx / 4 * 8 + 6, ty * 6 + (tx / 2 % 2) * 3 + frame);
     }
 
     private static bool DrawA1Waterfall(
@@ -75,7 +156,8 @@ public static class RpgMakerAutoTile
         MapTerrainDefinition terrain,
         Dictionary<(int X, int Y), MapTileCell> lookup,
         float opacity,
-        int animationFrame)
+        int animationFrame,
+        int kind)
     {
         if (tilesetImage is null || tileSize <= 1 || terrain.TileX < 0 || terrain.TileY < 0)
         {
@@ -84,8 +166,9 @@ public static class RpgMakerAutoTile
 
         var quarterSize = tileSize / 2f;
         var frame = terrain.Animated ? animationFrame % A1WaterfallFrameCount : 0;
-        var sourceX = terrain.TileX * tileSize;
-        var sourceY = (terrain.TileY + frame) * tileSize;
+        var block = A1WaterfallBlock(kind, frame);
+        var sourceX = block.X * tileSize;
+        var sourceY = block.Y * tileSize;
         if (sourceX < 0 || sourceY < 0 || sourceX + tileSize * 2 > tilesetImage.Width || sourceY + tileSize > tilesetImage.Height)
         {
             return false;

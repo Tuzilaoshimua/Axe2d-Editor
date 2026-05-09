@@ -310,8 +310,9 @@ public sealed class TilesetPalettePanel : Panel
             using var tagBack = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
             using var tagBrush = new SolidBrush(Color.White);
             using var tagFont = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold);
-            var text = entry.Kind == TilesetRegionKinds.RpgMakerA1 ? "A1" : "A2";
-            g.FillRectangle(tagBack, rect.Left + 3, rect.Top + 3, 22, 16);
+            var text = entry.Kind == TilesetRegionKinds.RpgMakerA1 ? A1EntryLabel(entry.Variant) : "A2";
+            var tagSize = g.MeasureString(text, tagFont);
+            g.FillRectangle(tagBack, rect.Left + 3, rect.Top + 3, Math.Max(18, (int)Math.Ceiling(tagSize.Width) + 8), 16);
             g.DrawString(text, tagFont, tagBrush, rect.Left + 6, rect.Top + 3);
         }
 
@@ -491,14 +492,13 @@ public sealed class TilesetPalettePanel : Panel
                 row++;
             }
 
-            var preview = new Point(
-                Math.Clamp(region.X, 0, imageColumns - 1),
-                Math.Clamp(region.Y, 0, imageRows - 1));
+            var preview = PreviewTileForRegion(region, imageColumns, imageRows);
             _foldedEntries.Add(new TilesetPaletteEntry(
                 new Point(region.X, region.Y),
                 preview,
                 new Size(1, 1),
                 region.Kind,
+                region.Variant,
                 EntryRect(column, row, 1, 1),
                 IsWaterfallRegion(region)));
             column++;
@@ -508,7 +508,7 @@ public sealed class TilesetPalettePanel : Panel
 
         foreach (var tile in EnumerateNormalRegionTiles(imageColumns, imageRows))
         {
-            _foldedEntries.Add(new TilesetPaletteEntry(tile, tile, new Size(1, 1), TilesetRegionKinds.Normal, NormalEntryRect(tile, normalTop), false));
+            _foldedEntries.Add(new TilesetPaletteEntry(tile, tile, new Size(1, 1), TilesetRegionKinds.Normal, string.Empty, NormalEntryRect(tile, normalTop), false));
         }
 
         var contentRight = _foldedEntries.Count == 0 ? _tileSize : _foldedEntries.Max(v => v.DisplayRect.Right);
@@ -558,10 +558,31 @@ public sealed class TilesetPalettePanel : Panel
             && string.Equals(region.Variant, RpgMakerA1RegionVariants.Waterfall, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsFrameRegion(TilesetRegionDefinition region)
+    private static Point PreviewTileForRegion(TilesetRegionDefinition region, int imageColumns, int imageRows)
     {
-        return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(region.Variant, RpgMakerA1RegionVariants.Frame, StringComparison.OrdinalIgnoreCase);
+        var x = region.X;
+        var y = region.Y;
+        if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase))
+        {
+            x = region.Variant == RpgMakerA1RegionVariants.Waterfall ? region.X : region.X + Math.Min(2, region.Width - 1);
+            y = region.Y + Math.Min(1, region.Height - 1);
+        }
+
+        return new Point(
+            Math.Clamp(x, 0, imageColumns - 1),
+            Math.Clamp(y, 0, imageRows - 1));
+    }
+
+    private static string A1EntryLabel(string variant)
+    {
+        return variant switch
+        {
+            RpgMakerA1RegionVariants.Ocean => "A",
+            RpgMakerA1RegionVariants.DeepSea => "B",
+            RpgMakerA1RegionVariants.OceanDecor => "C",
+            RpgMakerA1RegionVariants.Waterfall => "E",
+            _ => "D"
+        };
     }
 
     private static List<TilesetRegionDefinition> CloneRegions(IEnumerable<TilesetRegionDefinition>? regions)
@@ -614,7 +635,7 @@ public sealed class TilesetPalettePanel : Panel
     }
 }
 
-internal sealed record TilesetPaletteEntry(Point Tile, Point PreviewTile, Size SourceSize, string Kind, Rectangle DisplayRect, bool PreviewAsWaterfall);
+internal sealed record TilesetPaletteEntry(Point Tile, Point PreviewTile, Size SourceSize, string Kind, string Variant, Rectangle DisplayRect, bool PreviewAsWaterfall);
 
 public sealed class TilesetTileSelectedEventArgs : EventArgs
 {

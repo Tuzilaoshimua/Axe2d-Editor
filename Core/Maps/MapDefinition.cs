@@ -75,10 +75,11 @@ public static class TilesetRegionKinds
 
 public static class RpgMakerA1RegionVariants
 {
+    public const string Ocean = "Ocean";
+    public const string DeepSea = "DeepSea";
+    public const string OceanDecor = "OceanDecor";
     public const string Water = "Water";
-    public const string Decor = "Decor";
     public const string Waterfall = "Waterfall";
-    public const string Frame = "Frame";
 }
 
 public static class TilesetPlanModes

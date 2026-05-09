@@ -214,18 +214,19 @@ public sealed class TilesetPlannerDialog : Form
             new PlannerComboItem(TilesetPlanModes.Advanced, "高级模式")
         ], _mode);
         ConfigureCombo(_rpgKindCombo, [
-            new PlannerComboItem(RpgMakerTilesetKinds.A1, "A1 动态水面"),
+            new PlannerComboItem(RpgMakerTilesetKinds.A1, "A1 官方动画"),
             new PlannerComboItem(RpgMakerTilesetKinds.A2, "A2 地面"),
             new PlannerComboItem(RpgMakerTilesetKinds.A3, "A3 建筑外墙"),
             new PlannerComboItem(RpgMakerTilesetKinds.A4, "A4 墙壁/屋顶"),
             new PlannerComboItem(RpgMakerTilesetKinds.A5, "A5 普通瓦片")
         ], _rpgKind);
         ConfigureCombo(_a1VariantCombo, [
-            new PlannerComboItem(RpgMakerA1RegionVariants.Water, "水面动态 6x3"),
-            new PlannerComboItem(RpgMakerA1RegionVariants.Decor, "装饰拼接 2x3"),
-            new PlannerComboItem(RpgMakerA1RegionVariants.Waterfall, "瀑布动画 2x3"),
-            new PlannerComboItem(RpgMakerA1RegionVariants.Frame, "逐帧动画 2x3")
-        ], RpgMakerA1RegionVariants.Water);
+            new PlannerComboItem(RpgMakerA1RegionVariants.Ocean, "A 海洋 6x3"),
+            new PlannerComboItem(RpgMakerA1RegionVariants.DeepSea, "B 深海 6x3"),
+            new PlannerComboItem(RpgMakerA1RegionVariants.OceanDecor, "C 海洋装饰 2x3"),
+            new PlannerComboItem(RpgMakerA1RegionVariants.Water, "D 水面 6x3"),
+            new PlannerComboItem(RpgMakerA1RegionVariants.Waterfall, "E 瀑布 2x3")
+        ], RpgMakerA1RegionVariants.Ocean);
         _modeCombo.SelectedIndexChanged += (_, _) =>
         {
             _mode = SelectedComboValue(_modeCombo, TilesetPlanModes.Normal);
@@ -332,7 +333,7 @@ public sealed class TilesetPlannerDialog : Form
         _clearA2Button.Enabled = _regions.Any(IsRpgAutoRegion);
 
         _hintLabel.Text = isRpgMaker && isA1Kind
-            ? "RM 标准 A1: 水面按 4 帧循环，瀑布按 3 帧循环，装饰按 2x3 特殊块生成。"
+            ? "RM 标准 A1: A 海洋、B 深海、C 海洋装饰、D 水面、E 瀑布，按官方 16x12 格布局生成。"
             : isRpgMaker && string.Equals(_rpgKind, RpgMakerTilesetKinds.A2, StringComparison.OrdinalIgnoreCase)
             ? "RM 标准 A2: 每 4x3 为一组，自动生成左右两个 2x3 自动元件块；左侧面板会折叠显示可绘制代表瓦片。"
             : isRpgMaker
@@ -422,17 +423,29 @@ public sealed class TilesetPlannerDialog : Form
 
     private void GenerateStandardA1Regions(int columns, int rows)
     {
-        if (columns < 16 || rows < 3)
+        if (columns < 16 || rows < 12)
         {
-            MessageBox.Show(this, "标准 A1 至少需要 16x3 个瓦片格。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "标准 A1 至少需要 16x12 个瓦片格。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         _regions.RemoveAll(v => string.Equals(v.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase));
-        for (var y = 0; y + 3 <= rows; y += 3)
-        {
-            AddStandardA1WaterRow(y, columns, rows);
-        }
+        AddGeneratedA1Region(0, 0, 6, 3, "RM A1 A 海洋", RpgMakerA1RegionVariants.Ocean);
+        AddGeneratedA1Region(0, 3, 6, 3, "RM A1 B 深海", RpgMakerA1RegionVariants.DeepSea);
+        AddGeneratedA1Region(6, 0, 2, 3, "RM A1 C 海洋装饰 1", RpgMakerA1RegionVariants.OceanDecor);
+        AddGeneratedA1Region(6, 3, 2, 3, "RM A1 C 海洋装饰 2", RpgMakerA1RegionVariants.OceanDecor);
+        AddGeneratedA1Region(8, 0, 6, 3, "RM A1 D 水面 1", RpgMakerA1RegionVariants.Water);
+        AddGeneratedA1Region(8, 3, 6, 3, "RM A1 D 水面 2", RpgMakerA1RegionVariants.Water);
+        AddGeneratedA1Region(0, 6, 6, 3, "RM A1 D 水面 3", RpgMakerA1RegionVariants.Water);
+        AddGeneratedA1Region(0, 9, 6, 3, "RM A1 D 水面 4", RpgMakerA1RegionVariants.Water);
+        AddGeneratedA1Region(8, 6, 6, 3, "RM A1 D 水面 5", RpgMakerA1RegionVariants.Water);
+        AddGeneratedA1Region(8, 9, 6, 3, "RM A1 D 水面 6", RpgMakerA1RegionVariants.Water);
+        AddGeneratedA1Region(14, 0, 2, 3, "RM A1 E 瀑布 1", RpgMakerA1RegionVariants.Waterfall);
+        AddGeneratedA1Region(14, 3, 2, 3, "RM A1 E 瀑布 2", RpgMakerA1RegionVariants.Waterfall);
+        AddGeneratedA1Region(6, 6, 2, 3, "RM A1 E 瀑布 3", RpgMakerA1RegionVariants.Waterfall);
+        AddGeneratedA1Region(6, 9, 2, 3, "RM A1 E 瀑布 4", RpgMakerA1RegionVariants.Waterfall);
+        AddGeneratedA1Region(14, 6, 2, 3, "RM A1 E 瀑布 5", RpgMakerA1RegionVariants.Waterfall);
+        AddGeneratedA1Region(14, 9, 2, 3, "RM A1 E 瀑布 6", RpgMakerA1RegionVariants.Waterfall);
 
         RefreshRegionList();
         _canvas.Invalidate();
@@ -497,51 +510,6 @@ public sealed class TilesetPlannerDialog : Form
         });
     }
 
-    private void AddStandardA1WaterRow(int y, int columns, int rows)
-    {
-        if (y + 3 > rows)
-        {
-            return;
-        }
-
-        if (columns >= 6)
-        {
-            AddGeneratedA1Region(0, y, 6, 3, $"RM A1 水面 0,{y}", RpgMakerA1RegionVariants.Water);
-        }
-
-        if (columns >= 8)
-        {
-            var sideVariant = GetStandardA1SideVariant(y);
-            var sideName = sideVariant == RpgMakerA1RegionVariants.Decor ? "装饰" : "瀑布";
-            AddGeneratedA1Region(6, y, 2, 3, $"RM A1 {sideName} 6,{y}", sideVariant);
-        }
-
-        if (columns >= 14)
-        {
-            AddGeneratedA1Region(8, y, 6, 3, $"RM A1 水面 8,{y}", RpgMakerA1RegionVariants.Water);
-        }
-
-        if (columns >= 16)
-        {
-            var rightVariant = GetStandardA1RightVariant(y);
-            AddGeneratedA1Region(14, y, 2, 3, $"RM A1 瀑布 14,{y}", rightVariant);
-        }
-    }
-
-    private static string GetStandardA1SideVariant(int y)
-    {
-        var blockRow = Math.Max(0, y / 3) % 4;
-        return blockRow < 2
-            ? RpgMakerA1RegionVariants.Decor
-            : RpgMakerA1RegionVariants.Waterfall;
-    }
-
-    private static string GetStandardA1RightVariant(int y)
-    {
-        return RpgMakerA1RegionVariants.Waterfall;
-    }
-
-
     private static void ConfigureModeButton(RadioButton button, string text, bool isChecked = false)
     {
         button.Text = text;
@@ -562,7 +530,7 @@ public sealed class TilesetPlannerDialog : Form
         var kind = SelectedKind();
         if (kind == TilesetRegionKinds.RpgMakerA1 && !IsValidA1Selection(selection, SelectedA1Variant()))
         {
-            MessageBox.Show(this, "RPG Maker A1 区域必须匹配所选子类型：水面动态 6x3、装饰拼接 2x3、瀑布动画 2x3、逐帧动画 2x3。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "RPG Maker A1 区域必须匹配所选官方块：A/B/D 为 6x3，C/E 为 2x3。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -657,17 +625,18 @@ public sealed class TilesetPlannerDialog : Form
 
     private string SelectedA1Variant()
     {
-        return SelectedComboValue(_a1VariantCombo, RpgMakerA1RegionVariants.Water);
+        return SelectedComboValue(_a1VariantCombo, RpgMakerA1RegionVariants.Ocean);
     }
 
     private static bool IsValidA1Selection(Rectangle selection, string variant)
     {
         return variant switch
         {
+            RpgMakerA1RegionVariants.Ocean => selection.Width % 6 == 0 && selection.Height % 3 == 0,
+            RpgMakerA1RegionVariants.DeepSea => selection.Width % 6 == 0 && selection.Height % 3 == 0,
+            RpgMakerA1RegionVariants.OceanDecor => selection.Width % 2 == 0 && selection.Height % 3 == 0,
             RpgMakerA1RegionVariants.Water => selection.Width % 6 == 0 && selection.Height % 3 == 0,
-            RpgMakerA1RegionVariants.Decor => selection.Width % 2 == 0 && selection.Height % 3 == 0,
             RpgMakerA1RegionVariants.Waterfall => selection.Width % 2 == 0 && selection.Height % 3 == 0,
-            RpgMakerA1RegionVariants.Frame => selection.Width % 2 == 0 && selection.Height % 3 == 0,
             _ => false
         };
     }
@@ -943,10 +912,11 @@ internal sealed class TilesetPlannerCanvas : Panel
     {
         return region.Variant switch
         {
-            RpgMakerA1RegionVariants.Decor => "静态",
-            RpgMakerA1RegionVariants.Waterfall => "竖向",
-            RpgMakerA1RegionVariants.Frame => "逐帧",
-            _ => "动态"
+            RpgMakerA1RegionVariants.Ocean => "A海洋",
+            RpgMakerA1RegionVariants.DeepSea => "B深海",
+            RpgMakerA1RegionVariants.OceanDecor => "C装饰",
+            RpgMakerA1RegionVariants.Waterfall => "E瀑布",
+            _ => "D水面"
         };
     }
 }

@@ -443,10 +443,7 @@ public sealed class MapCanvasPanel : Panel
                 drawnFromTileset = DrawTilesetTile(g, rect, cell, terrain, layer.Opacity);
             }
 
-            if (!drawnFromTileset && terrain is null)
-            {
-                DrawA1Overlay(g, rect, cell, layer, layer.Opacity);
-            }
+            DrawA1Overlay(g, rect, cell, layer, layer.Opacity);
 
             if (!drawnFromTileset && terrain is not null)
             {
@@ -1105,6 +1102,16 @@ public sealed class MapCanvasPanel : Panel
             return;
         }
 
+        DrawA1AutoOverlay(g, rect, cell, layer, opacity, tileX, tileY);
+    }
+
+    private void DrawA1AutoOverlay(Graphics g, RectangleF rect, MapTileCell cell, MapLayerDefinition layer, float opacity, int tileX, int tileY)
+    {
+        if (_tilesetImage is null || _map is null)
+        {
+            return;
+        }
+
         var tileSize = _map.TileSize;
         var quarterSize = tileSize / 2f;
         var blockPixelX = tileX * tileSize;
@@ -1125,10 +1132,10 @@ public sealed class MapCanvasPanel : Panel
 
         Span<Point> quarters =
         [
-            sameN || sameW ? PickOverlayTopLeft(sameN, sameW, sameNw) : new Point(2, 4),
-            sameN || sameE ? PickOverlayTopRight(sameN, sameE, sameNe) : new Point(1, 4),
-            sameS || sameW ? PickOverlayBottomLeft(sameS, sameW, sameSw) : new Point(2, 3),
-            sameS || sameE ? PickOverlayBottomRight(sameS, sameE, sameSe) : new Point(1, 3)
+            PickOverlayTopLeft(sameN, sameW, sameNw),
+            PickOverlayTopRight(sameN, sameE, sameNe),
+            PickOverlayBottomLeft(sameS, sameW, sameSw),
+            PickOverlayBottomRight(sameS, sameE, sameSe)
         ];
 
         using var attributes = new System.Drawing.Imaging.ImageAttributes();
@@ -1163,6 +1170,7 @@ public sealed class MapCanvasPanel : Panel
 
     private static Point PickOverlayTopLeft(bool north, bool west, bool northWest)
     {
+        if (!north && !west) return new Point(0, 0);
         if (!north) return new Point(2, 2);
         if (!west) return new Point(0, 4);
         return northWest ? new Point(2, 4) : new Point(2, 0);
@@ -1170,6 +1178,7 @@ public sealed class MapCanvasPanel : Panel
 
     private static Point PickOverlayTopRight(bool north, bool east, bool northEast)
     {
+        if (!north && !east) return new Point(1, 0);
         if (!north) return new Point(1, 2);
         if (!east) return new Point(3, 4);
         return northEast ? new Point(1, 4) : new Point(3, 0);
@@ -1177,6 +1186,7 @@ public sealed class MapCanvasPanel : Panel
 
     private static Point PickOverlayBottomLeft(bool south, bool west, bool southWest)
     {
+        if (!south && !west) return new Point(0, 1);
         if (!south) return new Point(2, 5);
         if (!west) return new Point(0, 3);
         return southWest ? new Point(2, 3) : new Point(2, 1);
@@ -1184,6 +1194,7 @@ public sealed class MapCanvasPanel : Panel
 
     private static Point PickOverlayBottomRight(bool south, bool east, bool southEast)
     {
+        if (!south && !east) return new Point(1, 1);
         if (!south) return new Point(1, 5);
         if (!east) return new Point(3, 3);
         return southEast ? new Point(1, 3) : new Point(3, 1);
