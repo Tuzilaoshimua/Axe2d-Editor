@@ -9,14 +9,9 @@ public sealed class MapCanvasPanel : Panel
     private const float MinZoom = 0.2f;
     private const float MaxZoom = 6f;
     private const float DefaultZoom = 1f;
-    private const float A1OverlayFrameMinWaterRatio = 0.30f;
-    private const float A1OverlayFrameMinForegroundRatio = 0.18f;
-    private static readonly int[] A1OverlayWaterSurfaceSequence = [0, 1, 2, 1];
 
     private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 160 };
-    private readonly Dictionary<A1OverlayFrameKey, bool> _a1OverlayFrameCache = new();
-
-    private readonly record struct A1OverlayFrameKey(int SourceX, int SourceY, int TileSize);
+    private readonly System.Windows.Forms.Timer _brushSizePopupTimer = new() { Interval = 1000 };
 
     private MapDefinition? _map;
     private MapLayerDefinition? _activeLayer;
@@ -26,36 +21,75 @@ public sealed class MapCanvasPanel : Panel
     private Point _selectedTilesetTile = new(-1, -1);
     private Size _selectedTilesetTileSize = new(1, 1);
     private bool _selectedTilesetTileIsA1Overlay;
+    private bool _paintSelectedTerrainAsTileset;
     private bool _selectedTilesetTileIsA1OverlayAnimated;
     private bool _shiftAutoTerrainMode;
+    private bool _temporaryEyedropperMode;
     private MapBrushSource _brushSource = MapBrushSource.Terrain;
     private MapEditorTool _activeTool = MapEditorTool.Paint;
     private bool _showGrid = true;
     private bool _showAutoEdges = true;
+    private bool _animationEnabled = true;
     private bool _isMouseDown;
     private bool _isPanning;
     private bool _isRectSelecting;
+    private bool _hasActiveEditStroke;
+    private bool _activeEditStrokeChanged;
     private Point _panStart;
     private Point _hoverCell = new(-1, -1);
     private Point _rectStart = new(-1, -1);
     private Point _rectEnd = new(-1, -1);
+    private Point _brushSizePopupLocation = Point.Empty;
     private float _cameraX;
     private float _cameraY;
     private float _zoom = DefaultZoom;
     private int _animationTick;
+    private int _brushSize = 1;
 
     public event EventHandler? MapChanged;
+    public event EventHandler? EditStrokeStarting;
+    public event EventHandler<MapEditStrokeCompletedEventArgs>? EditStrokeCompleted;
     public event EventHandler<MapTileHoverEventArgs>? TileHovered;
     public event EventHandler<MapTerrainPickedEventArgs>? TerrainPicked;
     public event EventHandler<TilesetTileSelectedEventArgs>? TilesetTilePicked;
+    public event EventHandler<BrushSizePopupRequestedEventArgs>? BrushSizePopupRequested;
+    public event EventHandler? ShiftAutoTerrainRequested;
 
     public MapBrushSource BrushSource => _brushSource;
+
+    public int BrushSize
+    {
+        get => _brushSize;
+        set
+        {
+            var clamped = Math.Clamp(value, 1, 12);
+            if (_brushSize == clamped)
+            {
+                return;
+            }
+
+            _brushSize = clamped;
+            Invalidate();
+        }
+    }
 
     public MapEditorTool ActiveTool
     {
         get => _activeTool;
         set
         {
+            if (_activeTool == value)
+            {
+                return;
+            }
+
+            _brushSizePopupTimer.Stop();
+            if (_isMouseDown)
+            {
+                _isMouseDown = false;
+                EndEditStrokeIfNeeded();
+            }
+
             _activeTool = value;
             _isRectSelecting = false;
             Invalidate();
@@ -82,20 +116,59 @@ public sealed class MapCanvasPanel : Panel
         }
     }
 
+    public bool AnimationEnabled
+    {
+        get => _animationEnabled;
+        set
+        {
+            if (_animationEnabled == value)
+            {
+                return;
+            }
+
+            _animationEnabled = value;
+            if (_animationEnabled)
+            {
+                _animationTimer.Start();
+            }
+            else
+            {
+                _animationTimer.Stop();
+            }
+
+            Invalidate();
+        }
+    }
+
+    private int EffectiveAnimationTick => _animationEnabled ? _animationTick : 0;
+
     public MapCanvasPanel()
     {
         SetStyle(ControlStyles.Selectable, true);
         DoubleBuffered = true;
         ResizeRedraw = true;
         TabStop = true;
-        Cursor = Cursors.Cross;
+        Cursor = Cursors.Arrow;
         BackColor = Color.FromArgb(30, 30, 30);
         _animationTimer.Tick += (_, _) =>
         {
+            if (!_animationEnabled)
+            {
+                return;
+            }
+
             _animationTick++;
             if (HasAnimatedTerrain())
             {
                 Invalidate();
+            }
+        };
+        _brushSizePopupTimer.Tick += (_, _) =>
+        {
+            _brushSizePopupTimer.Stop();
+            if (_isMouseDown && _activeTool == MapEditorTool.Paint)
+            {
+                BrushSizePopupRequested?.Invoke(this, new BrushSizePopupRequestedEventArgs(_brushSizePopupLocation));
             }
         };
         _animationTimer.Start();
@@ -106,7 +179,7 @@ public sealed class MapCanvasPanel : Panel
         if (disposing)
         {
             _animationTimer.Dispose();
-            ClearA1OverlayFrameCache();
+            _brushSizePopupTimer.Dispose();
             _tilesetImage?.Dispose();
         }
 
@@ -115,13 +188,30 @@ public sealed class MapCanvasPanel : Panel
 
     public void SetMap(MapDefinition? map)
     {
+        SetMap(map, preserveView: false);
+    }
+
+    public void SetMap(MapDefinition? map, bool preserveView)
+    {
+        var previousCameraX = _cameraX;
+        var previousCameraY = _cameraY;
+        var previousZoom = _zoom;
         _map = map;
         if (_map is not null)
         {
             MapDefaults.Normalize(_map);
-            _cameraX = _map.Width / 2f;
-            _cameraY = _map.Height / 2f;
-            _zoom = DefaultZoom;
+            if (preserveView)
+            {
+                _cameraX = previousCameraX;
+                _cameraY = previousCameraY;
+                _zoom = previousZoom;
+            }
+            else
+            {
+                _cameraX = _map.Width / 2f;
+                _cameraY = _map.Height / 2f;
+                _zoom = DefaultZoom;
+            }
         }
 
         Invalidate();
@@ -136,12 +226,20 @@ public sealed class MapCanvasPanel : Panel
     public void SetSelectedTerrain(MapTerrainDefinition? terrain)
     {
         _selectedTerrain = terrain;
-        Invalidate();
+        if (terrain is not null)
+        {
+            UseTerrainBrush();
+        }
+        else
+        {
+            Invalidate();
+        }
     }
 
     public void UseTerrainBrush()
     {
         _brushSource = MapBrushSource.Terrain;
+        UpdateSelectedTerrainPaintMode();
         Invalidate();
     }
 
@@ -158,12 +256,24 @@ public sealed class MapCanvasPanel : Panel
         }
 
         _shiftAutoTerrainMode = enabled;
+        UpdateSelectedTerrainPaintMode();
+        Invalidate();
+    }
+
+    public void SetTemporaryEyedropperMode(bool enabled)
+    {
+        if (_temporaryEyedropperMode == enabled)
+        {
+            return;
+        }
+
+        _temporaryEyedropperMode = enabled;
+        Cursor = enabled ? Cursors.Hand : Cursors.Arrow;
         Invalidate();
     }
 
     public void SetTilesetImage(Image? image)
     {
-        ClearA1OverlayFrameCache();
         _tilesetImage?.Dispose();
         _tilesetImage = image;
         Invalidate();
@@ -190,6 +300,7 @@ public sealed class MapCanvasPanel : Panel
         _selectedTilesetTileSize = new Size(Math.Max(1, width), Math.Max(1, height));
         _selectedTilesetTileIsA1Overlay = isA1Overlay;
         _selectedTilesetTileIsA1OverlayAnimated = isA1OverlayAnimated;
+        UpdateSelectedTerrainPaintMode();
         Invalidate();
     }
 
@@ -201,6 +312,7 @@ public sealed class MapCanvasPanel : Panel
         }
 
         _brushSource = MapBrushSource.Tileset;
+        _paintSelectedTerrainAsTileset = false;
         Invalidate();
     }
 
@@ -252,7 +364,26 @@ public sealed class MapCanvasPanel : Panel
             return;
         }
 
+        if (_temporaryEyedropperMode)
+        {
+            PickTerrain(cell);
+            return;
+        }
+
         _isMouseDown = true;
+        if ((ModifierKeys & Keys.Shift) == Keys.Shift)
+        {
+            ShiftAutoTerrainRequested?.Invoke(this, EventArgs.Empty);
+        }
+
+        BeginEditStrokeIfNeeded();
+        if (_activeTool == MapEditorTool.Paint)
+        {
+            _brushSizePopupLocation = e.Location;
+            _brushSizePopupTimer.Stop();
+            _brushSizePopupTimer.Start();
+        }
+
         if (_activeTool == MapEditorTool.Rectangle)
         {
             _isRectSelecting = true;
@@ -306,6 +437,7 @@ public sealed class MapCanvasPanel : Panel
 
         if (_activeTool is MapEditorTool.Paint or MapEditorTool.Erase)
         {
+            _brushSizePopupTimer.Stop();
             ApplyTool(cell);
         }
     }
@@ -317,10 +449,11 @@ public sealed class MapCanvasPanel : Panel
         if (e.Button is MouseButtons.Right or MouseButtons.Middle)
         {
             _isPanning = false;
-            Cursor = Cursors.Cross;
+            Cursor = _temporaryEyedropperMode ? Cursors.Hand : Cursors.Arrow;
             return;
         }
 
+        _brushSizePopupTimer.Stop();
         if (!_isMouseDown)
         {
             return;
@@ -336,6 +469,7 @@ public sealed class MapCanvasPanel : Panel
         }
 
         _isMouseDown = false;
+        EndEditStrokeIfNeeded();
         Invalidate();
     }
 
@@ -343,6 +477,14 @@ public sealed class MapCanvasPanel : Panel
     {
         base.OnMouseLeave(e);
         _hoverCell = new Point(-1, -1);
+        _brushSizePopupTimer.Stop();
+        if (_isMouseDown)
+        {
+            _isMouseDown = false;
+            _isRectSelecting = false;
+            EndEditStrokeIfNeeded();
+        }
+
         TileHovered?.Invoke(this, new MapTileHoverEventArgs(-1, -1, false));
         Invalidate();
     }
@@ -452,12 +594,13 @@ public sealed class MapCanvasPanel : Panel
 
             var rect = CellToScreenRect(cell.X, cell.Y);
             var usesRpgMakerAutoTile = RpgMakerAutoTile.IsA1(terrain) || RpgMakerAutoTile.IsA2(terrain);
+            var animationTick = EffectiveAnimationTick;
             var drawnFromTileset = RpgMakerAutoTile.IsA1(terrain)
                 && terrain is not null
-                && RpgMakerAutoTile.DrawA1(g, _tilesetImage, _map.TileSize, rect, cell, terrain, lookup, layer.Opacity, _animationTick);
+                && RpgMakerAutoTile.DrawA1(g, _tilesetImage, _map.TileSize, rect, cell, terrain, lookup, layer.Opacity, animationTick);
             drawnFromTileset = drawnFromTileset || (RpgMakerAutoTile.IsA2(terrain)
                 && terrain is not null
-                && RpgMakerAutoTile.DrawA2(g, _tilesetImage, _map.TileSize, rect, cell, terrain, lookup, layer.Opacity, _animationTick));
+                && RpgMakerAutoTile.DrawA2(g, _tilesetImage, _map.TileSize, rect, cell, terrain, lookup, layer.Opacity, animationTick));
             if (!drawnFromTileset && !usesRpgMakerAutoTile)
             {
                 drawnFromTileset = DrawTilesetTile(g, rect, cell, terrain, layer.Opacity);
@@ -623,7 +766,7 @@ public sealed class MapCanvasPanel : Panel
             return;
         }
 
-        var hoverRect = CellToScreenRect(_hoverCell.X, _hoverCell.Y);
+        var hoverRect = GetBrushScreenRect(_hoverCell);
         using var brush = new SolidBrush(Color.FromArgb(38, 255, 255, 255));
         using var outline = new Pen(Color.White, 2f);
         g.FillRectangle(brush, hoverRect);
@@ -645,11 +788,36 @@ public sealed class MapCanvasPanel : Panel
         var brush = _brushSource == MapBrushSource.Tileset && _selectedTilesetTile.X >= 0
             ? $"atlas {_selectedTilesetTile.X},{_selectedTilesetTile.Y}"
             : terrain;
-        var text = $"{_map.Width}x{_map.Height}  zoom {MathF.Round(_zoom * 100f)}%  layer {layer}  brush {brush}";
+        var text = $"{_map.Width}x{_map.Height}  zoom {MathF.Round(_zoom * 100f)}%  layer {layer}  brush {brush}  size {_brushSize}";
         var size = g.MeasureString(text, font);
         var rect = new RectangleF(10, Height - size.Height - 14, size.Width + 16, size.Height + 8);
         g.FillRectangle(backBrush, rect);
         g.DrawString(text, font, textBrush, rect.Left + 8, rect.Top + 4);
+    }
+
+    private void BeginEditStrokeIfNeeded()
+    {
+        if (_hasActiveEditStroke || _activeTool == MapEditorTool.Eyedropper)
+        {
+            return;
+        }
+
+        _hasActiveEditStroke = true;
+        _activeEditStrokeChanged = false;
+        EditStrokeStarting?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void EndEditStrokeIfNeeded()
+    {
+        if (!_hasActiveEditStroke)
+        {
+            return;
+        }
+
+        var changed = _activeEditStrokeChanged;
+        _hasActiveEditStroke = false;
+        _activeEditStrokeChanged = false;
+        EditStrokeCompleted?.Invoke(this, new MapEditStrokeCompletedEventArgs(changed));
     }
 
     private void ApplyTool(Point cell)
@@ -659,22 +827,29 @@ public sealed class MapCanvasPanel : Panel
             return;
         }
 
+        var changed = false;
         switch (_activeTool)
         {
             case MapEditorTool.Paint:
-                SetCells(_activeLayer, cell.X, cell.Y);
+                changed = SetBrushCells(_activeLayer, cell);
                 break;
             case MapEditorTool.Erase:
-                RemoveCell(_activeLayer, cell.X, cell.Y);
+                changed = RemoveBrushCells(_activeLayer, cell);
                 break;
             case MapEditorTool.Fill:
-                FloodFill(cell);
+                changed = FloodFill(cell);
                 break;
             case MapEditorTool.Eyedropper:
                 PickTerrain(cell);
                 return;
         }
 
+        if (!changed)
+        {
+            return;
+        }
+
+        _activeEditStrokeChanged = true;
         MapChanged?.Invoke(this, EventArgs.Empty);
         Invalidate();
     }
@@ -694,36 +869,62 @@ public sealed class MapCanvasPanel : Panel
         {
             for (var x = left; x <= right; x++)
             {
-                SetCells(_activeLayer, x, y);
+                _activeEditStrokeChanged |= SetCells(_activeLayer, x, y);
             }
         }
 
-        MapChanged?.Invoke(this, EventArgs.Empty);
+        if (_activeEditStrokeChanged)
+        {
+            MapChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
-    private void SetCells(MapLayerDefinition layer, int x, int y)
+    private bool SetBrushCells(MapLayerDefinition layer, Point center)
     {
+        var changed = false;
+        foreach (var cell in EnumerateBrushCells(center))
+        {
+            changed |= SetCells(layer, cell.X, cell.Y);
+        }
+
+        return changed;
+    }
+
+    private bool RemoveBrushCells(MapLayerDefinition layer, Point center)
+    {
+        var changed = false;
+        foreach (var cell in EnumerateBrushCells(center))
+        {
+            changed |= RemoveCell(layer, cell.X, cell.Y);
+        }
+
+        return changed;
+    }
+
+    private bool SetCells(MapLayerDefinition layer, int x, int y)
+    {
+        var changed = false;
         if (_brushSource == MapBrushSource.Tileset && (_selectedTilesetTileSize.Width > 1 || _selectedTilesetTileSize.Height > 1))
         {
             for (var offsetY = 0; offsetY < _selectedTilesetTileSize.Height; offsetY++)
             {
                 for (var offsetX = 0; offsetX < _selectedTilesetTileSize.Width; offsetX++)
                 {
-                    SetCell(layer, x + offsetX, y + offsetY, _selectedTilesetTile.X + offsetX, _selectedTilesetTile.Y + offsetY);
+                    changed |= SetCell(layer, x + offsetX, y + offsetY, _selectedTilesetTile.X + offsetX, _selectedTilesetTile.Y + offsetY);
                 }
             }
 
-            return;
+            return changed;
         }
 
-        SetCell(layer, x, y);
+        return SetCell(layer, x, y);
     }
 
-    private void SetCell(MapLayerDefinition layer, int x, int y, int? overrideTileX = null, int? overrideTileY = null)
+    private bool SetCell(MapLayerDefinition layer, int x, int y, int? overrideTileX = null, int? overrideTileY = null)
     {
         if (_map is null || x < 0 || y < 0 || x >= _map.Width || y >= _map.Height)
         {
-            return;
+            return false;
         }
 
         var existing = layer.Tiles.FirstOrDefault(v => v.X == x && v.Y == y);
@@ -737,50 +938,114 @@ public sealed class MapCanvasPanel : Panel
 
         if (layer.Kind.Equals("Collision", StringComparison.OrdinalIgnoreCase))
         {
+            if (existing.Solid
+                && existing.TerrainId.Equals("collision", StringComparison.OrdinalIgnoreCase)
+                && existing.TileX == -1
+                && existing.TileY == -1
+                && string.IsNullOrEmpty(existing.Tag))
+            {
+                return false;
+            }
+
             existing.Solid = true;
             existing.TerrainId = "collision";
-            return;
+            existing.TileX = -1;
+            existing.TileY = -1;
+            existing.Tag = string.Empty;
+            return true;
         }
 
         if (layer.Kind.Equals("Region", StringComparison.OrdinalIgnoreCase))
         {
-            existing.TerrainId = _selectedTerrain?.Id ?? "region";
+            var terrainId = _selectedTerrain?.Id ?? "region";
+            var tag = string.IsNullOrWhiteSpace(existing.Tag) ? "region" : existing.Tag;
+            if (existing.TerrainId == terrainId
+                && existing.TileX == -1
+                && existing.TileY == -1
+                && existing.Tag == tag
+                && !existing.Solid)
+            {
+                return false;
+            }
+
+            existing.TerrainId = terrainId;
             existing.TileX = -1;
             existing.TileY = -1;
-            existing.Tag = string.IsNullOrWhiteSpace(existing.Tag) ? "region" : existing.Tag;
-            return;
+            existing.Tag = tag;
+            existing.Solid = false;
+            return true;
         }
 
         if (_brushSource == MapBrushSource.Tileset && _selectedTilesetTile.X >= 0 && _selectedTilesetTile.Y >= 0)
         {
-            existing.TileX = overrideTileX ?? _selectedTilesetTile.X;
-            existing.TileY = overrideTileY ?? _selectedTilesetTile.Y;
+            var tileX = overrideTileX ?? _selectedTilesetTile.X;
+            var tileY = overrideTileY ?? _selectedTilesetTile.Y;
             if (_shiftAutoTerrainMode && _shiftTerrain is not null)
             {
+                if (existing.TerrainId == _shiftTerrain.Id
+                    && existing.TileX == -1
+                    && existing.TileY == -1
+                    && string.IsNullOrEmpty(existing.Tag)
+                    && !existing.Solid)
+                {
+                    return false;
+                }
+
                 existing.TerrainId = _shiftTerrain.Id;
                 existing.TileX = -1;
                 existing.TileY = -1;
                 existing.Tag = string.Empty;
-                return;
+                existing.Solid = false;
+                return true;
             }
 
             if (_selectedTilesetTileIsA1Overlay)
             {
-                existing.Tag = A1OverlayTag(existing.TileX, existing.TileY, _selectedTilesetTileIsA1OverlayAnimated);
-                return;
+                var tag = A1OverlayTag(tileX, tileY, _selectedTilesetTileIsA1OverlayAnimated);
+                if (existing.TileX == tileX
+                    && existing.TileY == tileY
+                    && existing.Tag == tag)
+                {
+                    return false;
+                }
+
+                existing.TileX = tileX;
+                existing.TileY = tileY;
+                existing.Tag = tag;
+                return true;
             }
 
+            if (existing.TileX == tileX
+                && existing.TileY == tileY
+                && string.IsNullOrEmpty(existing.TerrainId)
+                && string.IsNullOrEmpty(existing.Tag)
+                && !existing.Solid)
+            {
+                return false;
+            }
+
+            existing.TileX = tileX;
+            existing.TileY = tileY;
             existing.TerrainId = string.Empty;
             existing.Tag = string.Empty;
-            return;
+            existing.Solid = false;
+            return true;
         }
 
         if (ShouldPaintSelectedTerrainAsTileset())
         {
+            var tag = A1OverlayTag(_selectedTilesetTile.X, _selectedTilesetTile.Y, _selectedTilesetTileIsA1OverlayAnimated);
+            if (existing.TileX == _selectedTilesetTile.X
+                && existing.TileY == _selectedTilesetTile.Y
+                && existing.Tag == tag)
+            {
+                return false;
+            }
+
             existing.TileX = _selectedTilesetTile.X;
             existing.TileY = _selectedTilesetTile.Y;
-            existing.Tag = A1OverlayTag(existing.TileX, existing.TileY, _selectedTilesetTileIsA1OverlayAnimated);
-            return;
+            existing.Tag = tag;
+            return true;
         }
 
         if (_selectedTerrain is null)
@@ -790,31 +1055,45 @@ public sealed class MapCanvasPanel : Panel
                 RemoveCell(layer, x, y);
             }
 
-            return;
+            return false;
+        }
+
+        if (existing.TerrainId == _selectedTerrain.Id
+            && existing.TileX == -1
+            && existing.TileY == -1
+            && string.IsNullOrEmpty(existing.Tag)
+            && !existing.Solid)
+        {
+            return false;
         }
 
         existing.TerrainId = _selectedTerrain.Id;
         existing.TileX = -1;
         existing.TileY = -1;
         existing.Tag = string.Empty;
+        existing.Solid = false;
+        return true;
     }
 
-    private static void RemoveCell(MapLayerDefinition layer, int x, int y)
+    private static bool RemoveCell(MapLayerDefinition layer, int x, int y)
     {
         for (var index = layer.Tiles.Count - 1; index >= 0; index--)
         {
             if (layer.Tiles[index].X == x && layer.Tiles[index].Y == y)
             {
                 layer.Tiles.RemoveAt(index);
+                return true;
             }
         }
+
+        return false;
     }
 
-    private void FloodFill(Point origin)
+    private bool FloodFill(Point origin)
     {
         if (_map is null || _activeLayer is null || !IsInside(origin))
         {
-            return;
+            return false;
         }
 
         var lookup = BuildLookup(_activeLayer);
@@ -822,9 +1101,10 @@ public sealed class MapCanvasPanel : Panel
         var replacementKey = GetReplacementKey(_activeLayer);
         if (string.Equals(targetKey, replacementKey, StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            return false;
         }
 
+        var changed = false;
         var queue = new Queue<Point>();
         var visited = new HashSet<(int X, int Y)>();
         queue.Enqueue(origin);
@@ -839,7 +1119,7 @@ public sealed class MapCanvasPanel : Panel
                 continue;
             }
 
-            SetCell(_activeLayer, current.X, current.Y);
+            changed |= SetCell(_activeLayer, current.X, current.Y);
             foreach (var next in EnumerateNeighbors(current))
             {
                 if (!IsInside(next) || !visited.Add((next.X, next.Y)))
@@ -850,6 +1130,8 @@ public sealed class MapCanvasPanel : Panel
                 queue.Enqueue(next);
             }
         }
+
+        return changed;
     }
 
     private void PickTerrain(Point cell)
@@ -897,6 +1179,12 @@ public sealed class MapCanvasPanel : Panel
     private bool ShouldPaintSelectedTerrainAsTileset()
     {
         return _brushSource == MapBrushSource.Terrain
+            && _paintSelectedTerrainAsTileset;
+    }
+
+    private void UpdateSelectedTerrainPaintMode()
+    {
+        _paintSelectedTerrainAsTileset = _brushSource == MapBrushSource.Terrain
             && _selectedTilesetTileIsA1Overlay
             && _selectedTilesetTile.X >= 0
             && _selectedTilesetTile.Y >= 0
@@ -926,6 +1214,23 @@ public sealed class MapCanvasPanel : Panel
         yield return new Point(cell.X - 1, cell.Y);
         yield return new Point(cell.X, cell.Y + 1);
         yield return new Point(cell.X, cell.Y - 1);
+    }
+
+    private IEnumerable<Point> EnumerateBrushCells(Point center)
+    {
+        var leftOffset = -(_brushSize / 2);
+        var topOffset = -(_brushSize / 2);
+        for (var offsetY = 0; offsetY < _brushSize; offsetY++)
+        {
+            for (var offsetX = 0; offsetX < _brushSize; offsetX++)
+            {
+                var cell = new Point(center.X + leftOffset + offsetX, center.Y + topOffset + offsetY);
+                if (IsInside(cell))
+                {
+                    yield return cell;
+                }
+            }
+        }
     }
 
     private Rectangle GetVisibleRange()
@@ -959,6 +1264,15 @@ public sealed class MapCanvasPanel : Panel
     {
         var topLeft = WorldToScreen(x, y);
         return new RectangleF(topLeft.X, topLeft.Y, TilePixels, TilePixels);
+    }
+
+    private RectangleF GetBrushScreenRect(Point center)
+    {
+        var left = center.X - (_brushSize / 2);
+        var top = center.Y - (_brushSize / 2);
+        var topLeft = WorldToScreen(left, top);
+        var bottomRight = WorldToScreen(left + _brushSize, top + _brushSize);
+        return RectangleF.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
     }
 
     private PointF WorldToScreen(float x, float y)
@@ -1001,8 +1315,9 @@ public sealed class MapCanvasPanel : Panel
 
     private Color AnimateColor(Color color, MapTerrainDefinition terrain)
     {
-        var frame = _animationTick % Math.Max(1, terrain.AnimationFrames);
-        var delta = (int)(Math.Sin((_animationTick + frame) * 0.65) * 16);
+        var animationTick = EffectiveAnimationTick;
+        var frame = animationTick % Math.Max(1, terrain.AnimationFrames);
+        var delta = (int)(Math.Sin((animationTick + frame) * 0.65) * 16);
         return Color.FromArgb(
             color.A,
             Math.Clamp(color.R + delta / 2, 0, 255),
@@ -1048,7 +1363,7 @@ public sealed class MapCanvasPanel : Panel
             tileY = terrain?.TileY ?? -1;
             if (terrain?.Animated == true)
             {
-                frameOffset = _animationTick % Math.Max(1, terrain.AnimationFrames);
+                frameOffset = EffectiveAnimationTick % Math.Max(1, terrain.AnimationFrames);
             }
         }
 
@@ -1088,127 +1403,11 @@ public sealed class MapCanvasPanel : Panel
 
         if (!animated)
         {
-            DrawA1StaticOverlay(g, rect, cell, layer, opacity, tileX, tileY);
+            DrawA1AutoOverlay(g, rect, cell, layer, opacity, tileX, tileY);
             return;
         }
 
-        var frame = A1OverlayUsesWaterSurfaceSequence(tileX, tileY)
-            ? A1OverlayWaterSurfaceSequence[_animationTick % A1OverlayWaterSurfaceSequence.Length]
-            : _animationTick % 3;
-        tileY += frame;
-        var sourceX = tileX * _map.TileSize;
-        var sourceY = tileY * _map.TileSize;
-        if (sourceX < 0 || sourceY < 0 || sourceX + _map.TileSize > _tilesetImage.Width || sourceY + _map.TileSize > _tilesetImage.Height)
-        {
-            return;
-        }
-
-        using var attributes = new ImageAttributes();
-        var matrix = new ColorMatrix { Matrix33 = opacity };
-        attributes.SetColorMatrix(matrix);
-        g.DrawImage(
-            _tilesetImage,
-            Rectangle.Round(rect),
-            sourceX,
-            sourceY,
-            _map.TileSize,
-            _map.TileSize,
-            GraphicsUnit.Pixel,
-            attributes);
-    }
-
-    private void DrawA1StaticOverlay(Graphics g, RectangleF rect, MapTileCell cell, MapLayerDefinition layer, float opacity, int tileX, int tileY)
-    {
-        if (_tilesetImage is null || _map is null)
-        {
-            return;
-        }
-
-        DrawA1AutoOverlay(g, rect, cell, layer, opacity, tileX, tileY);
-    }
-
-    private void ClearA1OverlayFrameCache()
-    {
-        _a1OverlayFrameCache.Clear();
-    }
-
-    private bool A1OverlayUsesWaterSurfaceSequence(int tileX, int tileY)
-    {
-        if (_tilesetImage is null || _map is null)
-        {
-            return false;
-        }
-
-        var key = new A1OverlayFrameKey(tileX * _map.TileSize, tileY * _map.TileSize, _map.TileSize);
-        if (!_a1OverlayFrameCache.TryGetValue(key, out var usesWaterSurfaceSequence))
-        {
-            usesWaterSurfaceSequence = IsA1OverlayWaterSurfaceObject(key.SourceX, key.SourceY, key.TileSize);
-            _a1OverlayFrameCache[key] = usesWaterSurfaceSequence;
-        }
-
-        return usesWaterSurfaceSequence;
-    }
-
-    private bool IsA1OverlayWaterSurfaceObject(int sourceX, int sourceY, int tileSize)
-    {
-        if (_tilesetImage is null
-            || sourceX < 0
-            || sourceY < 0
-            || sourceX + tileSize > _tilesetImage.Width
-            || sourceY + tileSize > _tilesetImage.Height)
-        {
-            return false;
-        }
-
-        Bitmap? disposableTileset = null;
-        var tilesetBitmap = _tilesetImage as Bitmap ?? (disposableTileset = new Bitmap(_tilesetImage));
-        try
-        {
-            var waterPixels = 0;
-            var foregroundPixels = 0;
-            for (var y = 0; y < tileSize; y++)
-            {
-                for (var x = 0; x < tileSize; x++)
-                {
-                    var color = tilesetBitmap.GetPixel(sourceX + x, sourceY + y);
-                    if (color.A <= 8 || IsA1OverlayWaterPixel(color))
-                    {
-                        waterPixels++;
-                    }
-                    else
-                    {
-                        foregroundPixels++;
-                    }
-                }
-            }
-
-            var totalPixels = Math.Max(1, waterPixels + foregroundPixels);
-            return waterPixels / (float)totalPixels >= A1OverlayFrameMinWaterRatio
-                && foregroundPixels / (float)totalPixels >= A1OverlayFrameMinForegroundRatio;
-        }
-        finally
-        {
-            disposableTileset?.Dispose();
-        }
-    }
-
-    private static bool IsA1OverlayWaterPixel(Color color)
-    {
-        var max = Math.Max(color.R, Math.Max(color.G, color.B));
-        var min = Math.Min(color.R, Math.Min(color.G, color.B));
-        var brightness = max / 255f;
-        var saturation = max == 0 ? 0f : (max - min) / (float)max;
-        var hue = color.GetHue();
-        if (color.R >= 232 && color.G >= 232 && color.B >= 232)
-        {
-            return true;
-        }
-
-        return color.B >= color.R
-            && color.G >= color.R
-            && hue is >= 175f and <= 220f
-            && saturation >= 0.15f
-            && brightness >= 0.38f;
+        DrawA1WaterfallOverlay(g, rect, cell, layer, opacity, tileX, tileY);
     }
 
     private void DrawA1AutoOverlay(Graphics g, RectangleF rect, MapTileCell cell, MapLayerDefinition layer, float opacity, int tileX, int tileY)
@@ -1256,6 +1455,62 @@ public sealed class MapCanvasPanel : Panel
                 GetDestinationQuarter(rect, index),
                 (int)MathF.Round(blockPixelX + source.X * quarterSize),
                 (int)MathF.Round(blockPixelY + source.Y * quarterSize),
+                (int)MathF.Ceiling(quarterSize),
+                (int)MathF.Ceiling(quarterSize),
+                GraphicsUnit.Pixel,
+                attributes);
+        }
+    }
+
+    private void DrawA1WaterfallOverlay(Graphics g, RectangleF rect, MapTileCell cell, MapLayerDefinition layer, float opacity, int tileX, int tileY)
+    {
+        if (_tilesetImage is null || _map is null)
+        {
+            return;
+        }
+
+        var tileSize = _map.TileSize;
+        var quarterSize = tileSize / 2f;
+        var frame = EffectiveAnimationTick % 3;
+        var sourceX = tileX * tileSize;
+        var sourceY = (tileY + frame) * tileSize;
+        if (sourceX < 0 || sourceY < 0 || sourceX + tileSize * 2 > _tilesetImage.Width || sourceY + tileSize > _tilesetImage.Height)
+        {
+            return;
+        }
+
+        var sameW = IsSameA1Overlay(layer, cell, -1, 0);
+        var sameE = IsSameA1Overlay(layer, cell, 1, 0);
+        Point[] quarters;
+        if (sameW && sameE)
+        {
+            quarters = [new Point(2, 0), new Point(1, 0), new Point(2, 1), new Point(1, 1)];
+        }
+        else if (sameE)
+        {
+            quarters = [new Point(0, 0), new Point(1, 0), new Point(0, 1), new Point(1, 1)];
+        }
+        else if (sameW)
+        {
+            quarters = [new Point(2, 0), new Point(3, 0), new Point(2, 1), new Point(3, 1)];
+        }
+        else
+        {
+            quarters = [new Point(0, 0), new Point(3, 0), new Point(0, 1), new Point(3, 1)];
+        }
+
+        using var attributes = new ImageAttributes();
+        var matrix = new ColorMatrix { Matrix33 = opacity };
+        attributes.SetColorMatrix(matrix);
+
+        for (var index = 0; index < quarters.Length; index++)
+        {
+            var source = quarters[index];
+            g.DrawImage(
+                _tilesetImage,
+                GetDestinationQuarter(rect, index),
+                (int)MathF.Round(sourceX + source.X * quarterSize),
+                (int)MathF.Round(sourceY + source.Y * quarterSize),
                 (int)MathF.Ceiling(quarterSize),
                 (int)MathF.Ceiling(quarterSize),
                 GraphicsUnit.Pixel,
@@ -1377,6 +1632,26 @@ public sealed class MapTileHoverEventArgs : EventArgs
     public int Y { get; }
 
     public bool Inside { get; }
+}
+
+public sealed class MapEditStrokeCompletedEventArgs : EventArgs
+{
+    public MapEditStrokeCompletedEventArgs(bool changed)
+    {
+        Changed = changed;
+    }
+
+    public bool Changed { get; }
+}
+
+public sealed class BrushSizePopupRequestedEventArgs : EventArgs
+{
+    public BrushSizePopupRequestedEventArgs(Point location)
+    {
+        Location = location;
+    }
+
+    public Point Location { get; }
 }
 
 public sealed class MapTerrainPickedEventArgs : EventArgs

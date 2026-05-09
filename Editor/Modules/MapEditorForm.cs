@@ -13,6 +13,7 @@ public sealed class MapEditorForm : Form
     private const int RightWidth = 300;
     private const int LeftMapHeight = 180;
     private const int RightLayerHeight = 260;
+    private const int MaxMapHistory = 80;
 
     private enum TilesetImportMode
     {
@@ -30,12 +31,14 @@ public sealed class MapEditorForm : Form
     private readonly ToolTip _toolTip = new();
     private readonly ToolStrip _toolStrip = new();
     private readonly ToolStripButton _paintButton = new();
+    private readonly ToolStripButton _undoButton = new();
+    private readonly ToolStripButton _redoButton = new();
     private readonly ToolStripButton _eraseButton = new();
     private readonly ToolStripButton _fillButton = new();
     private readonly ToolStripButton _rectButton = new();
-    private readonly ToolStripButton _pickButton = new();
     private readonly ToolStripButton _gridButton = new();
     private readonly ToolStripButton _autoEdgeButton = new();
+    private readonly ToolStripButton _animationButton = new();
     private readonly ToolStripButton _resetViewButton = new();
     private readonly ToolStripButton _saveButton = new();
     private readonly ToolStripButton _importTilesetButton = new();
@@ -71,14 +74,32 @@ public sealed class MapEditorForm : Form
     private readonly CheckBox _layerVisibleBox = new();
     private readonly CheckBox _layerLockedBox = new();
     private readonly NumericUpDown _layerOpacityBox = new();
+    private readonly ContextMenuStrip _brushSizeMenu = new();
+    private readonly TrackBar _brushSizeTrack = new();
+    private readonly Panel _brushSizePreview = new();
+    private readonly Label _brushSizeLabel = new();
+    private readonly System.Windows.Forms.Timer _paintButtonHoldTimer = new() { Interval = 500 };
+    private ToolStripButton? _brushSizeAnchorButton;
+    private readonly Stack<MapHistorySnapshot> _undoStack = new();
+    private readonly Stack<MapHistorySnapshot> _redoStack = new();
 
     private MapDefinition? _selectedMap;
     private MapLayerDefinition? _selectedLayer;
     private MapTerrainDefinition? _selectedTerrain;
     private MapTerrainDefinition? _shiftTerrain;
+    private MapHistorySnapshot? _pendingMapEditSnapshot;
     private Point _selectedTilesetTile = new(-1, -1);
     private bool _shiftAutoTerrainMode;
+    private bool _altEyedropperMode;
+    private bool _isRestoringHistory;
+    private bool _isMapEditing;
+    private bool _suppressShiftWhileBrushMenuOpen;
     private bool _suppressUiEvents;
+
+    private sealed record MapHistorySnapshot(
+        MapDefinition Map,
+        MapLayerDefinition? SelectedLayer,
+        string? SelectedLayerId);
 
     public MapEditorForm(
         ProjectContext context,
@@ -93,10 +114,40 @@ public sealed class MapEditorForm : Form
         _settings = settings;
         _settingsService = settingsService;
 
+        _paintButtonHoldTimer.Tick += (_, _) =>
+        {
+            _paintButtonHoldTimer.Stop();
+            if (_brushSizeAnchorButton is not null)
+            {
+                ShowBrushSizeMenu(_brushSizeAnchorButton.Bounds.Left, _brushSizeAnchorButton.Bounds.Bottom + 2);
+                _brushSizeAnchorButton = null;
+            }
+        };
+        _brushSizeMenu.Opening += (_, _) =>
+        {
+            _suppressShiftWhileBrushMenuOpen = true;
+            if (_shiftAutoTerrainMode)
+            {
+                SetShiftAutoTerrainMode(false);
+            }
+        };
+        _brushSizeMenu.Closed += (_, _) => _suppressShiftWhileBrushMenuOpen = false;
+
         NormalizeMaps();
         BuildUi();
         RefreshMapList();
         SelectFirstMap();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _paintButtonHoldTimer.Dispose();
+            _brushSizeMenu.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 
     private void BuildUi()
@@ -110,6 +161,7 @@ public sealed class MapEditorForm : Form
         TabSelectAllBehavior.InstallRecursive(this);
 
         BuildToolStrip();
+        BuildBrushSizeMenu();
         BuildStatusBar();
         Controls.Add(_toolStrip);
 
@@ -187,6 +239,38 @@ public sealed class MapEditorForm : Form
 
     private void MapEditorForm_KeyDown(object? sender, KeyEventArgs e)
     {
+        if (_suppressShiftWhileBrushMenuOpen && e.KeyCode == Keys.ShiftKey)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (e.KeyCode == Keys.Menu && _canvas.ActiveTool == MapEditorTool.Paint && !_altEyedropperMode)
+        {
+            _altEyedropperMode = true;
+            _canvas.SetTemporaryEyedropperMode(true);
+            UpdateStatusText();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (e.Control && e.KeyCode == Keys.Z)
+        {
+            UndoMapEdit();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (e.Control && e.KeyCode == Keys.Y)
+        {
+            RedoMapEdit();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
         if (e.KeyCode == Keys.ShiftKey)
         {
             SetShiftAutoTerrainMode(true);
@@ -195,6 +279,23 @@ public sealed class MapEditorForm : Form
 
     private void MapEditorForm_KeyUp(object? sender, KeyEventArgs e)
     {
+        if (_suppressShiftWhileBrushMenuOpen && e.KeyCode == Keys.ShiftKey)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (e.KeyCode == Keys.Menu && _altEyedropperMode)
+        {
+            _altEyedropperMode = false;
+            _canvas.SetTemporaryEyedropperMode(false);
+            UpdateA2Highlight();
+            UpdateStatusText();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
         if (e.KeyCode == Keys.ShiftKey)
         {
             SetShiftAutoTerrainMode(false);
@@ -203,15 +304,20 @@ public sealed class MapEditorForm : Form
 
     private void SetShiftAutoTerrainMode(bool enabled)
     {
+        if (_suppressShiftWhileBrushMenuOpen && enabled)
+        {
+            return;
+        }
+
         if (_shiftAutoTerrainMode == enabled)
         {
             return;
         }
 
         _shiftAutoTerrainMode = enabled;
-        if (enabled && _selectedTilesetTile.X >= 0 && IsA1OverlayTile(_selectedTilesetTile.X, _selectedTilesetTile.Y))
+        if (enabled)
         {
-            _shiftTerrain = FindPlannedAutoTerrain(_selectedTilesetTile.X, _selectedTilesetTile.Y);
+            _shiftTerrain = null;
             _canvas.SetShiftTerrain(_shiftTerrain);
         }
 
@@ -227,11 +333,20 @@ public sealed class MapEditorForm : Form
         _toolStrip.Padding = new Padding(8, 5, 8, 5);
         _toolStrip.ImageScalingSize = new Size(20, 20);
 
+        _undoButton.Text = "↶";
+        _undoButton.ToolTipText = "撤销 Ctrl+Z";
+        _undoButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+        _undoButton.Click += (_, _) => UndoMapEdit();
+
+        _redoButton.Text = "↷";
+        _redoButton.ToolTipText = "重做 Ctrl+Y";
+        _redoButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+        _redoButton.Click += (_, _) => RedoMapEdit();
+
         ConfigureToolButton(_paintButton, "🖌", "画笔", MapEditorTool.Paint);
         ConfigureToolButton(_eraseButton, "⌫", "橡皮", MapEditorTool.Erase);
         ConfigureToolButton(_fillButton, "▣", "填充", MapEditorTool.Fill);
         ConfigureToolButton(_rectButton, "▤", "矩形", MapEditorTool.Rectangle);
-        ConfigureToolButton(_pickButton, "⌖", "吸管", MapEditorTool.Eyedropper);
 
         _gridButton.Text = "#";
         _gridButton.ToolTipText = "显示网格";
@@ -244,6 +359,17 @@ public sealed class MapEditorForm : Form
         _autoEdgeButton.CheckOnClick = true;
         _autoEdgeButton.Checked = true;
         _autoEdgeButton.Click += (_, _) => _canvas.ShowAutoEdges = _autoEdgeButton.Checked;
+
+        _animationButton.CheckOnClick = true;
+        _animationButton.Checked = true;
+        _animationButton.ToolTipText = T("mapEditor.animation.tooltip", "动态瓦片预览");
+        _animationButton.Click += (_, _) =>
+        {
+            _canvas.AnimationEnabled = _animationButton.Checked;
+            UpdateAnimationButtonText();
+            UpdateStatusText();
+        };
+        UpdateAnimationButtonText();
 
         _resetViewButton.Text = "◎";
         _resetViewButton.ToolTipText = "重置视图";
@@ -267,18 +393,28 @@ public sealed class MapEditorForm : Form
             _importTilesetButton,
             _planTilesetButton,
             new ToolStripSeparator(),
+            _undoButton,
+            _redoButton,
+            new ToolStripSeparator(),
             _paintButton,
             _eraseButton,
             _fillButton,
             _rectButton,
-            _pickButton,
             new ToolStripSeparator(),
             _gridButton,
             _autoEdgeButton,
+            _animationButton,
             _resetViewButton,
             _saveButton
         ]);
         SelectTool(MapEditorTool.Paint);
+    }
+
+    private void UpdateAnimationButtonText()
+    {
+        _animationButton.Text = _animationButton.Checked
+            ? T("mapEditor.animation.dynamic", "动态")
+            : T("mapEditor.animation.static", "静态");
     }
 
     private Control BuildMapPanel()
@@ -396,9 +532,32 @@ public sealed class MapEditorForm : Form
             Padding = new Padding(0)
         };
         _canvas.Dock = DockStyle.Fill;
+        _canvas.ShiftAutoTerrainRequested += (_, _) =>
+        {
+            if (!_suppressShiftWhileBrushMenuOpen)
+            {
+                SetShiftAutoTerrainMode(true);
+            }
+        };
+        _canvas.EditStrokeStarting += (_, _) => BeginMapEditHistory();
+        _canvas.EditStrokeStarting += (_, _) => _isMapEditing = true;
+        _canvas.EditStrokeCompleted += (_, e) =>
+        {
+            _isMapEditing = false;
+            CompleteMapEditHistory(e.Changed);
+        };
+        _canvas.BrushSizePopupRequested += (_, e) => ShowBrushSizeMenuFromCanvas(e.Location);
         _canvas.MapChanged += (_, _) =>
         {
-            UpdateLayerListText();
+            if (!_isRestoringHistory)
+            {
+                SaveProject();
+            }
+
+            if (!_isMapEditing)
+            {
+                UpdateLayerListText();
+            }
             UpdateStatusText();
         };
         _canvas.TileHovered += (_, e) =>
@@ -557,6 +716,35 @@ public sealed class MapEditorForm : Form
         button.DisplayStyle = ToolStripItemDisplayStyle.Text;
         button.CheckOnClick = true;
         button.Click += (_, _) => SelectTool(tool);
+        if (tool is MapEditorTool.Paint or MapEditorTool.Erase)
+        {
+            button.MouseDown += (_, e) =>
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    _brushSizeAnchorButton = button;
+                    _paintButtonHoldTimer.Stop();
+                    _paintButtonHoldTimer.Start();
+                }
+                else if (e.Button == MouseButtons.Right)
+                {
+                    _brushSizeAnchorButton = button;
+                    _paintButtonHoldTimer.Stop();
+                    ShowBrushSizeMenu(button.Bounds.Left, button.Bounds.Bottom + 2);
+                    _brushSizeAnchorButton = null;
+                }
+            };
+            button.MouseUp += (_, _) =>
+            {
+                _paintButtonHoldTimer.Stop();
+                _brushSizeAnchorButton = null;
+            };
+            button.MouseLeave += (_, _) =>
+            {
+                _paintButtonHoldTimer.Stop();
+                _brushSizeAnchorButton = null;
+            };
+        }
     }
 
     private static void ConfigureSmallButton(Button button, string text, Action action)
@@ -631,6 +819,101 @@ public sealed class MapEditorForm : Form
         panel.Controls.Add(editor, 1, row);
     }
 
+    private void BuildBrushSizeMenu()
+    {
+        var hostPanel = new TableLayoutPanel
+        {
+            Width = 270,
+            Height = 196,
+            Padding = new Padding(12),
+            ColumnCount = 1,
+            RowCount = 3
+        };
+        hostPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
+        hostPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 62F));
+        hostPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 78F));
+
+        _brushSizeLabel.Dock = DockStyle.Fill;
+        _brushSizeLabel.TextAlign = ContentAlignment.MiddleLeft;
+
+        _brushSizeTrack.Dock = DockStyle.Fill;
+        _brushSizeTrack.Minimum = 1;
+        _brushSizeTrack.Maximum = 12;
+        _brushSizeTrack.TickFrequency = 1;
+        _brushSizeTrack.SmallChange = 1;
+        _brushSizeTrack.LargeChange = 2;
+        _brushSizeTrack.Margin = new Padding(0, 2, 0, 4);
+        _brushSizeTrack.Value = _canvas.BrushSize;
+        _brushSizeTrack.ValueChanged += (_, _) =>
+        {
+            _canvas.BrushSize = _brushSizeTrack.Value;
+            UpdateBrushSizePreview();
+        };
+
+        _brushSizePreview.Dock = DockStyle.Fill;
+        _brushSizePreview.Margin = new Padding(0, 6, 0, 0);
+        _brushSizePreview.BorderStyle = BorderStyle.FixedSingle;
+        _brushSizePreview.Paint += (_, e) => PaintBrushSizePreview(e.Graphics, _brushSizePreview.ClientRectangle);
+
+        hostPanel.Controls.Add(_brushSizeLabel, 0, 0);
+        hostPanel.Controls.Add(_brushSizeTrack, 0, 1);
+        hostPanel.Controls.Add(_brushSizePreview, 0, 2);
+        _brushSizeMenu.Items.Add(new ToolStripControlHost(hostPanel)
+        {
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            AutoSize = false,
+            Size = hostPanel.Size
+        });
+        UpdateBrushSizePreview();
+    }
+
+    private void ShowBrushSizeMenu(int x, int y)
+    {
+        _brushSizeTrack.Value = Math.Clamp(_canvas.BrushSize, _brushSizeTrack.Minimum, _brushSizeTrack.Maximum);
+        UpdateBrushSizePreview();
+        BeginInvoke(new Action(() => _brushSizeMenu.Show(_toolStrip, new Point(x, y))));
+    }
+
+    private void ShowBrushSizeMenuFromCanvas(Point canvasLocation)
+    {
+        var screenPoint = _canvas.PointToScreen(canvasLocation);
+        _brushSizeTrack.Value = Math.Clamp(_canvas.BrushSize, _brushSizeTrack.Minimum, _brushSizeTrack.Maximum);
+        UpdateBrushSizePreview();
+        _brushSizeMenu.Show(screenPoint);
+    }
+
+    private void UpdateBrushSizePreview()
+    {
+        _brushSizeLabel.Text = $"尺寸：{_canvas.BrushSize} x {_canvas.BrushSize}";
+        _brushSizePreview.Invalidate();
+        UpdateStatusText();
+    }
+
+    private void PaintBrushSizePreview(Graphics graphics, Rectangle bounds)
+    {
+        graphics.Clear(SystemColors.Window);
+        var brushSize = Math.Max(1, _canvas.BrushSize);
+        var availableWidth = Math.Max(16, bounds.Width - 16);
+        var availableHeight = Math.Max(16, bounds.Height - 16);
+        var cellSize = Math.Max(3, Math.Min(availableWidth / brushSize, availableHeight / brushSize));
+        var totalSize = cellSize * brushSize;
+        var left = bounds.Left + (bounds.Width - totalSize) / 2;
+        var top = bounds.Top + (bounds.Height - totalSize) / 2;
+        using var fill = new SolidBrush(Color.FromArgb(90, 0, 120, 215));
+        using var border = new Pen(Color.FromArgb(210, 0, 120, 215));
+        using var grid = new Pen(Color.FromArgb(80, 0, 120, 215));
+        graphics.FillRectangle(fill, left, top, totalSize, totalSize);
+        for (var index = 1; index < brushSize; index++)
+        {
+            var offset = index * cellSize;
+            graphics.DrawLine(grid, left + offset, top, left + offset, top + totalSize);
+            graphics.DrawLine(grid, left, top + offset, left + totalSize, top + offset);
+        }
+
+        graphics.DrawRectangle(border, left, top, totalSize, totalSize);
+    }
+
     private void NormalizeMaps()
     {
         foreach (var map in _context.Project.AssetLibrary.Maps)
@@ -666,6 +949,11 @@ public sealed class MapEditorForm : Form
     private void SelectMap(MapDefinition? map)
     {
         _selectedMap = map;
+        if (!_isRestoringHistory)
+        {
+            ClearMapHistory();
+        }
+
         if (_selectedMap is not null)
         {
             MapDefaults.Normalize(_selectedMap);
@@ -1017,16 +1305,7 @@ public sealed class MapEditorForm : Form
         var isA1OverlayAnimated = IsA1AnimatedOverlayTile(tileX, tileY);
         if (useAsBrush)
         {
-            if (isA1OverlayTile && !_shiftAutoTerrainMode)
-            {
-                _shiftTerrain = FindPlannedAutoTerrain(tileX, tileY);
-                _canvas.SetShiftTerrain(_shiftTerrain);
-                _canvas.SetTilesetSelection(tileX, tileY, 1, 1, isA1Overlay: true, isA1OverlayAnimated: isA1OverlayAnimated);
-                _canvas.UseTilesetBrush();
-                _selectedTerrain = null;
-                _canvas.SetSelectedTerrain(null);
-            }
-            else if (TrySelectPlannedAutoTerrain(tileX, tileY))
+            if (TrySelectPlannedAutoTerrain(tileX, tileY))
             {
                 _shiftTerrain = _selectedTerrain;
                 _canvas.SetShiftTerrain(_shiftTerrain);
@@ -1150,7 +1429,7 @@ public sealed class MapEditorForm : Form
         _eraseButton.Checked = tool == MapEditorTool.Erase;
         _fillButton.Checked = tool == MapEditorTool.Fill;
         _rectButton.Checked = tool == MapEditorTool.Rectangle;
-        _pickButton.Checked = tool == MapEditorTool.Eyedropper;
+        UpdateBrushSizePreview();
         UpdateStatusText();
     }
 
@@ -1298,6 +1577,223 @@ public sealed class MapEditorForm : Form
         _canvas.Invalidate();
     }
 
+    private void BeginMapEditHistory()
+    {
+        if (_isRestoringHistory || _selectedMap is null)
+        {
+            _pendingMapEditSnapshot = null;
+            return;
+        }
+
+        _pendingMapEditSnapshot = CaptureMapHistorySnapshot();
+    }
+
+    private void CompleteMapEditHistory(bool changed)
+    {
+        if (_isRestoringHistory)
+        {
+            _pendingMapEditSnapshot = null;
+            return;
+        }
+
+        if (changed && _pendingMapEditSnapshot is not null)
+        {
+            _undoStack.Push(_pendingMapEditSnapshot);
+            TrimHistory(_undoStack);
+            _redoStack.Clear();
+            UpdateHistoryButtons();
+        }
+
+        _pendingMapEditSnapshot = null;
+        UpdateHistoryButtons();
+    }
+
+    private MapHistorySnapshot CaptureMapHistorySnapshot()
+    {
+        return new MapHistorySnapshot(CloneMap(_selectedMap!), _selectedLayer, _selectedLayer?.Id);
+    }
+
+    private void UndoMapEdit()
+    {
+        if (_selectedMap is null || _undoStack.Count == 0)
+        {
+            return;
+        }
+
+        _redoStack.Push(CaptureMapHistorySnapshot());
+        TrimHistory(_redoStack);
+        RestoreMapHistorySnapshot(_undoStack.Pop());
+    }
+
+    private void RedoMapEdit()
+    {
+        if (_selectedMap is null || _redoStack.Count == 0)
+        {
+            return;
+        }
+
+        _undoStack.Push(CaptureMapHistorySnapshot());
+        TrimHistory(_undoStack);
+        RestoreMapHistorySnapshot(_redoStack.Pop());
+    }
+
+    private void RestoreMapHistorySnapshot(MapHistorySnapshot snapshot)
+    {
+        if (_selectedMap is null)
+        {
+            return;
+        }
+
+        _isRestoringHistory = true;
+        try
+        {
+            CopyMapState(snapshot.Map, _selectedMap);
+            MapDefaults.Normalize(_selectedMap);
+            RefreshLayerList();
+            var layer = !string.IsNullOrWhiteSpace(snapshot.SelectedLayerId)
+                ? _selectedMap.Layers.FirstOrDefault(v => string.Equals(v.Id, snapshot.SelectedLayerId, StringComparison.OrdinalIgnoreCase))
+                : null;
+            SelectLayer(layer ?? _selectedMap.Layers.FirstOrDefault());
+            RefreshTerrainPalette();
+            LoadTilesetPreview();
+            _canvas.SetMap(_selectedMap, preserveView: true);
+            SaveProject();
+        }
+        finally
+        {
+            _isRestoringHistory = false;
+            UpdateHistoryButtons();
+        }
+    }
+
+    private void ClearMapHistory()
+    {
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _pendingMapEditSnapshot = null;
+        UpdateHistoryButtons();
+    }
+
+    private void UpdateHistoryButtons()
+    {
+        _undoButton.Enabled = _selectedMap is not null && _undoStack.Count > 0;
+        _redoButton.Enabled = _selectedMap is not null && _redoStack.Count > 0;
+    }
+
+    private static void TrimHistory(Stack<MapHistorySnapshot> stack)
+    {
+        if (stack.Count <= MaxMapHistory)
+        {
+            return;
+        }
+
+        var items = stack.Reverse().Skip(stack.Count - MaxMapHistory).ToArray();
+        stack.Clear();
+        foreach (var item in items)
+        {
+            stack.Push(item);
+        }
+    }
+
+    private static MapDefinition CloneMap(MapDefinition source)
+    {
+        var clone = new MapDefinition();
+        CopyMapState(source, clone);
+        return clone;
+    }
+
+    private static void CopyMapState(MapDefinition source, MapDefinition target)
+    {
+        target.Id = source.Id;
+        target.DisplayName = source.DisplayName;
+        target.DisplayNameKey = source.DisplayNameKey;
+        target.Description = source.Description;
+        target.DescriptionKey = source.DescriptionKey;
+        target.ViewType = source.ViewType;
+        target.Width = source.Width;
+        target.Height = source.Height;
+        target.TileSize = source.TileSize;
+        target.Tileset = source.Tileset;
+        target.TilesetImagePath = source.TilesetImagePath;
+        target.BackgroundColor = source.BackgroundColor;
+        target.TilesetPlan = CloneTilesetPlan(source.TilesetPlan);
+        target.Terrains = source.Terrains.Select(CloneTerrain).ToList();
+        target.Layers = source.Layers.Select(CloneLayer).ToList();
+    }
+
+    private static TilesetPlanDefinition CloneTilesetPlan(TilesetPlanDefinition source)
+    {
+        return new TilesetPlanDefinition
+        {
+            TileSize = source.TileSize,
+            Mode = source.Mode,
+            RpgMakerKind = source.RpgMakerKind,
+            RpgMakerLayout = source.RpgMakerLayout,
+            Regions = source.Regions.Select(CloneTilesetRegion).ToList()
+        };
+    }
+
+    private static TilesetRegionDefinition CloneTilesetRegion(TilesetRegionDefinition source)
+    {
+        return new TilesetRegionDefinition
+        {
+            Id = source.Id,
+            Name = source.Name,
+            Kind = source.Kind,
+            Variant = source.Variant,
+            X = source.X,
+            Y = source.Y,
+            Width = source.Width,
+            Height = source.Height
+        };
+    }
+
+    private static MapTerrainDefinition CloneTerrain(MapTerrainDefinition source)
+    {
+        return new MapTerrainDefinition
+        {
+            Id = source.Id,
+            DisplayName = source.DisplayName,
+            ColorHex = source.ColorHex,
+            EdgeColorHex = source.EdgeColorHex,
+            Rule = source.Rule,
+            Animated = source.Animated,
+            AnimationFrames = source.AnimationFrames,
+            AnimationFps = source.AnimationFps,
+            TileX = source.TileX,
+            TileY = source.TileY
+        };
+    }
+
+    private static MapLayerDefinition CloneLayer(MapLayerDefinition source)
+    {
+        return new MapLayerDefinition
+        {
+            Id = source.Id,
+            Name = source.Name,
+            Kind = source.Kind,
+            Visible = source.Visible,
+            Locked = source.Locked,
+            Opacity = source.Opacity,
+            Tiles = source.Tiles.Select(CloneTile).ToList()
+        };
+    }
+
+    private static MapTileCell CloneTile(MapTileCell source)
+    {
+        return new MapTileCell
+        {
+            X = source.X,
+            Y = source.Y,
+            TerrainId = source.TerrainId,
+            TileX = source.TileX,
+            TileY = source.TileY,
+            Variant = source.Variant,
+            Solid = source.Solid,
+            Tag = source.Tag
+        };
+    }
+
     private void RefreshMapListSelection(MapDefinition selected)
     {
         _suppressUiEvents = true;
@@ -1325,6 +1821,7 @@ public sealed class MapEditorForm : Form
         _deleteLayerButton.Enabled = hasMap && hasLayer && _selectedMap!.Layers.Count > 1;
         _moveLayerUpButton.Enabled = hasMap && hasLayer && _selectedMap!.Layers.IndexOf(_selectedLayer!) < _selectedMap.Layers.Count - 1;
         _moveLayerDownButton.Enabled = hasMap && hasLayer && _selectedMap!.Layers.IndexOf(_selectedLayer!) > 0;
+        UpdateHistoryButtons();
     }
 
     private void UpdateStatusText()
@@ -1335,7 +1832,10 @@ public sealed class MapEditorForm : Form
         var brush = _canvas.BrushSource == MapBrushSource.Tileset && _selectedTilesetTile.X >= 0
             ? $"图块 {_selectedTilesetTile.X},{_selectedTilesetTile.Y}"
             : $"地形 {terrain}";
-        _statusLabel.Text = $"{map} | {layer} | {brush}{ShiftStatusSuffix()}";
+        var animation = _canvas.AnimationEnabled
+            ? T("mapEditor.animation.statusDynamic", "动态预览")
+            : T("mapEditor.animation.statusStatic", "静态预览");
+        _statusLabel.Text = $"{map} | {layer} | {brush} | 画笔 {_canvas.BrushSize}x{_canvas.BrushSize} | {animation}{ShiftStatusSuffix()}{AltStatusSuffix()}";
     }
 
     private string ShiftStatusSuffix()
@@ -1355,6 +1855,11 @@ public sealed class MapEditorForm : Form
         return string.IsNullOrWhiteSpace(name)
             ? " | Shift 自动地形"
             : $" | Shift 自动地形: {name}";
+    }
+
+    private string AltStatusSuffix()
+    {
+        return _altEyedropperMode ? " | Alt 吸管" : string.Empty;
     }
 
     private void SaveProject()
@@ -2001,6 +2506,13 @@ public sealed class MapEditorForm : Form
 
     private void UpdateA2Highlight()
     {
+        if (!_shiftAutoTerrainMode)
+        {
+            _tilesetPalette.HighlightBlockOrigin = new Point(-1, -1);
+            _tilesetPalette.HighlightBlockSize = Size.Empty;
+            return;
+        }
+
         if (_selectedTerrain is not null && RpgMakerAutoTile.IsA1(_selectedTerrain))
         {
             _tilesetPalette.HighlightBlockOrigin = new Point(_selectedTerrain.TileX, _selectedTerrain.TileY);
@@ -2026,6 +2538,7 @@ public sealed class MapEditorForm : Form
         _useTilesetBrushButton.BackColor = useTileset ? Color.FromArgb(215, 232, 255) : SystemColors.Control;
         _useTilesetBrushButton.Enabled = _selectedTilesetTile.X >= 0 && _selectedTilesetTile.Y >= 0;
         _bindA2PaletteButton.Enabled = _selectedTerrain is not null && _selectedTilesetTile.X >= 0 && _selectedTilesetTile.Y >= 0;
+        UpdateHistoryButtons();
     }
 
     private void UpdateTilesetButtons()
