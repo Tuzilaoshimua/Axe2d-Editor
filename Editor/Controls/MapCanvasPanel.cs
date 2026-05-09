@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using Axe2DEditor.Core.Maps;
 
 namespace Axe2DEditor.Editor.Controls;
@@ -8,8 +9,14 @@ public sealed class MapCanvasPanel : Panel
     private const float MinZoom = 0.2f;
     private const float MaxZoom = 6f;
     private const float DefaultZoom = 1f;
+    private const float A1OverlayFrameMinWaterRatio = 0.30f;
+    private const float A1OverlayFrameMinForegroundRatio = 0.18f;
+    private static readonly int[] A1OverlayWaterSurfaceSequence = [0, 1, 2, 1];
 
     private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 160 };
+    private readonly Dictionary<A1OverlayFrameKey, bool> _a1OverlayFrameCache = new();
+
+    private readonly record struct A1OverlayFrameKey(int SourceX, int SourceY, int TileSize);
 
     private MapDefinition? _map;
     private MapLayerDefinition? _activeLayer;
@@ -94,6 +101,18 @@ public sealed class MapCanvasPanel : Panel
         _animationTimer.Start();
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _animationTimer.Dispose();
+            ClearA1OverlayFrameCache();
+            _tilesetImage?.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
     public void SetMap(MapDefinition? map)
     {
         _map = map;
@@ -144,6 +163,7 @@ public sealed class MapCanvasPanel : Panel
 
     public void SetTilesetImage(Image? image)
     {
+        ClearA1OverlayFrameCache();
         _tilesetImage?.Dispose();
         _tilesetImage = image;
         Invalidate();
@@ -1044,8 +1064,8 @@ public sealed class MapCanvasPanel : Panel
             return false;
         }
 
-        using var attributes = new System.Drawing.Imaging.ImageAttributes();
-        var matrix = new System.Drawing.Imaging.ColorMatrix { Matrix33 = opacity };
+        using var attributes = new ImageAttributes();
+        var matrix = new ColorMatrix { Matrix33 = opacity };
         attributes.SetColorMatrix(matrix);
         g.DrawImage(
             _tilesetImage,
@@ -1072,7 +1092,9 @@ public sealed class MapCanvasPanel : Panel
             return;
         }
 
-        var frame = _animationTick % 3;
+        var frame = A1OverlayUsesWaterSurfaceSequence(tileX, tileY)
+            ? A1OverlayWaterSurfaceSequence[_animationTick % A1OverlayWaterSurfaceSequence.Length]
+            : _animationTick % 3;
         tileY += frame;
         var sourceX = tileX * _map.TileSize;
         var sourceY = tileY * _map.TileSize;
@@ -1081,8 +1103,8 @@ public sealed class MapCanvasPanel : Panel
             return;
         }
 
-        using var attributes = new System.Drawing.Imaging.ImageAttributes();
-        var matrix = new System.Drawing.Imaging.ColorMatrix { Matrix33 = opacity };
+        using var attributes = new ImageAttributes();
+        var matrix = new ColorMatrix { Matrix33 = opacity };
         attributes.SetColorMatrix(matrix);
         g.DrawImage(
             _tilesetImage,
@@ -1103,6 +1125,90 @@ public sealed class MapCanvasPanel : Panel
         }
 
         DrawA1AutoOverlay(g, rect, cell, layer, opacity, tileX, tileY);
+    }
+
+    private void ClearA1OverlayFrameCache()
+    {
+        _a1OverlayFrameCache.Clear();
+    }
+
+    private bool A1OverlayUsesWaterSurfaceSequence(int tileX, int tileY)
+    {
+        if (_tilesetImage is null || _map is null)
+        {
+            return false;
+        }
+
+        var key = new A1OverlayFrameKey(tileX * _map.TileSize, tileY * _map.TileSize, _map.TileSize);
+        if (!_a1OverlayFrameCache.TryGetValue(key, out var usesWaterSurfaceSequence))
+        {
+            usesWaterSurfaceSequence = IsA1OverlayWaterSurfaceObject(key.SourceX, key.SourceY, key.TileSize);
+            _a1OverlayFrameCache[key] = usesWaterSurfaceSequence;
+        }
+
+        return usesWaterSurfaceSequence;
+    }
+
+    private bool IsA1OverlayWaterSurfaceObject(int sourceX, int sourceY, int tileSize)
+    {
+        if (_tilesetImage is null
+            || sourceX < 0
+            || sourceY < 0
+            || sourceX + tileSize > _tilesetImage.Width
+            || sourceY + tileSize > _tilesetImage.Height)
+        {
+            return false;
+        }
+
+        Bitmap? disposableTileset = null;
+        var tilesetBitmap = _tilesetImage as Bitmap ?? (disposableTileset = new Bitmap(_tilesetImage));
+        try
+        {
+            var waterPixels = 0;
+            var foregroundPixels = 0;
+            for (var y = 0; y < tileSize; y++)
+            {
+                for (var x = 0; x < tileSize; x++)
+                {
+                    var color = tilesetBitmap.GetPixel(sourceX + x, sourceY + y);
+                    if (color.A <= 8 || IsA1OverlayWaterPixel(color))
+                    {
+                        waterPixels++;
+                    }
+                    else
+                    {
+                        foregroundPixels++;
+                    }
+                }
+            }
+
+            var totalPixels = Math.Max(1, waterPixels + foregroundPixels);
+            return waterPixels / (float)totalPixels >= A1OverlayFrameMinWaterRatio
+                && foregroundPixels / (float)totalPixels >= A1OverlayFrameMinForegroundRatio;
+        }
+        finally
+        {
+            disposableTileset?.Dispose();
+        }
+    }
+
+    private static bool IsA1OverlayWaterPixel(Color color)
+    {
+        var max = Math.Max(color.R, Math.Max(color.G, color.B));
+        var min = Math.Min(color.R, Math.Min(color.G, color.B));
+        var brightness = max / 255f;
+        var saturation = max == 0 ? 0f : (max - min) / (float)max;
+        var hue = color.GetHue();
+        if (color.R >= 232 && color.G >= 232 && color.B >= 232)
+        {
+            return true;
+        }
+
+        return color.B >= color.R
+            && color.G >= color.R
+            && hue is >= 175f and <= 220f
+            && saturation >= 0.15f
+            && brightness >= 0.38f;
     }
 
     private void DrawA1AutoOverlay(Graphics g, RectangleF rect, MapTileCell cell, MapLayerDefinition layer, float opacity, int tileX, int tileY)
@@ -1138,8 +1244,8 @@ public sealed class MapCanvasPanel : Panel
             PickOverlayBottomRight(sameS, sameE, sameSe)
         ];
 
-        using var attributes = new System.Drawing.Imaging.ImageAttributes();
-        var matrix = new System.Drawing.Imaging.ColorMatrix { Matrix33 = opacity };
+        using var attributes = new ImageAttributes();
+        var matrix = new ColorMatrix { Matrix33 = opacity };
         attributes.SetColorMatrix(matrix);
 
         for (var index = 0; index < quarters.Length; index++)
