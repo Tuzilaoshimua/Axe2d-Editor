@@ -4,7 +4,28 @@ namespace Axe2DEditor.Core.Maps;
 
 public static class RpgMakerAutoTile
 {
+    public const int A3StandaloneShape = 15;
+
     private static readonly int[] A1WaterSurfaceSequence = [0, 1, 2, 1];
+    private static readonly Point[][] WallAutoTileTable =
+    [
+        [new Point(2, 2), new Point(1, 2), new Point(2, 1), new Point(1, 1)],
+        [new Point(0, 2), new Point(1, 2), new Point(0, 1), new Point(1, 1)],
+        [new Point(2, 0), new Point(1, 0), new Point(2, 1), new Point(1, 1)],
+        [new Point(0, 0), new Point(1, 0), new Point(0, 1), new Point(1, 1)],
+        [new Point(2, 2), new Point(3, 2), new Point(2, 1), new Point(3, 1)],
+        [new Point(0, 2), new Point(3, 2), new Point(0, 1), new Point(3, 1)],
+        [new Point(2, 0), new Point(3, 0), new Point(2, 1), new Point(3, 1)],
+        [new Point(0, 0), new Point(3, 0), new Point(0, 1), new Point(3, 1)],
+        [new Point(2, 2), new Point(1, 2), new Point(2, 3), new Point(1, 3)],
+        [new Point(0, 2), new Point(1, 2), new Point(0, 3), new Point(1, 3)],
+        [new Point(2, 0), new Point(1, 0), new Point(2, 3), new Point(1, 3)],
+        [new Point(0, 0), new Point(1, 0), new Point(0, 3), new Point(1, 3)],
+        [new Point(2, 2), new Point(3, 2), new Point(2, 3), new Point(3, 3)],
+        [new Point(0, 2), new Point(3, 2), new Point(0, 3), new Point(3, 3)],
+        [new Point(2, 0), new Point(3, 0), new Point(2, 3), new Point(3, 3)],
+        [new Point(0, 0), new Point(3, 0), new Point(0, 3), new Point(3, 3)]
+    ];
     private const int A1WaterfallFrameCount = 3;
 
     public static bool IsA1(MapTerrainDefinition? terrain)
@@ -23,9 +44,22 @@ public static class RpgMakerAutoTile
             && terrain.TileY >= 0;
     }
 
+    public static bool IsA3(MapTerrainDefinition? terrain)
+    {
+        return terrain is not null
+            && terrain.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase)
+            && terrain.TileX >= 0
+            && terrain.TileY >= 0;
+    }
+
     public static Point SnapA2Origin(int tileX, int tileY)
     {
         return new Point(Math.Max(0, tileX / 2 * 2), Math.Max(0, tileY / 3 * 3));
+    }
+
+    public static Point SnapA3Origin(int tileX, int tileY)
+    {
+        return new Point(Math.Max(0, tileX / 2 * 2), Math.Max(0, tileY / 2 * 2));
     }
 
     public static Point SnapA1Origin(int tileX, int tileY)
@@ -239,6 +273,40 @@ public static class RpgMakerAutoTile
         return DrawAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, terrain.TileX + frameOffset * 2, terrain.TileY);
     }
 
+    public static bool DrawA3(
+        Graphics graphics,
+        Image? tilesetImage,
+        int tileSize,
+        RectangleF destination,
+        MapTileCell cell,
+        MapTerrainDefinition terrain,
+        Dictionary<(int X, int Y), MapTileCell> lookup,
+        float opacity)
+    {
+        int? fixedShape = TryParseA3FixedShapeTag(cell.Tag, out var shape) ? shape : null;
+        return IsA3(terrain)
+            && DrawWallAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, terrain.TileX, terrain.TileY, fixedShape);
+    }
+
+    public static string A3FixedShapeTag(int shape)
+    {
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"a3Shape:{Math.Clamp(shape, 0, WallAutoTileTable.Length - 1)}");
+    }
+
+    public static bool TryParseA3FixedShapeTag(string? tag, out int shape)
+    {
+        const string prefix = "a3Shape:";
+        shape = 0;
+        if (string.IsNullOrWhiteSpace(tag) || !tag.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return int.TryParse(tag[prefix.Length..], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out shape)
+            && shape >= 0
+            && shape < WallAutoTileTable.Length;
+    }
+
     private static bool DrawAutoTileBlock(
         Graphics graphics,
         Image? tilesetImage,
@@ -306,6 +374,63 @@ public static class RpgMakerAutoTile
         return true;
     }
 
+    private static bool DrawWallAutoTileBlock(
+        Graphics graphics,
+        Image? tilesetImage,
+        int tileSize,
+        RectangleF destination,
+        MapTileCell cell,
+        MapTerrainDefinition terrain,
+        Dictionary<(int X, int Y), MapTileCell> lookup,
+        float opacity,
+        int blockTileX,
+        int blockTileY,
+        int? fixedShape = null)
+    {
+        if (tilesetImage is null || tileSize <= 1 || blockTileX < 0 || blockTileY < 0)
+        {
+            return false;
+        }
+
+        var quarterSize = tileSize / 2f;
+        var blockPixelX = blockTileX * tileSize;
+        var blockPixelY = blockTileY * tileSize;
+        if (blockPixelX < 0
+            || blockPixelY < 0
+            || blockPixelX + tileSize * 2 > tilesetImage.Width
+            || blockPixelY + tileSize * 2 > tilesetImage.Height)
+        {
+            return false;
+        }
+
+        var shape = fixedShape ?? WallAutoTileShape(
+            IsSameTerrain(lookup, cell.X, cell.Y - 1, cell.TerrainId),
+            IsSameTerrain(lookup, cell.X + 1, cell.Y, cell.TerrainId),
+            IsSameTerrain(lookup, cell.X, cell.Y + 1, cell.TerrainId),
+            IsSameTerrain(lookup, cell.X - 1, cell.Y, cell.TerrainId));
+        var quarters = WallAutoTileTable[shape];
+
+        using var attributes = new ImageAttributes();
+        var matrix = new ColorMatrix { Matrix33 = opacity };
+        attributes.SetColorMatrix(matrix);
+
+        for (var index = 0; index < quarters.Length; index++)
+        {
+            var source = quarters[index];
+            graphics.DrawImage(
+                tilesetImage,
+                GetDestinationQuarter(destination, index),
+                (int)MathF.Round(blockPixelX + source.X * quarterSize),
+                (int)MathF.Round(blockPixelY + source.Y * quarterSize),
+                (int)MathF.Ceiling(quarterSize),
+                (int)MathF.Ceiling(quarterSize),
+                GraphicsUnit.Pixel,
+                attributes);
+        }
+
+        return true;
+    }
+
     private static Point PickTopLeft(bool north, bool west, bool northWest)
     {
         if (!north && !west) return new Point(0, 0);
@@ -336,6 +461,14 @@ public static class RpgMakerAutoTile
         if (!south) return new Point(1, 5);
         if (!east) return new Point(3, 3);
         return southEast ? new Point(1, 3) : new Point(3, 1);
+    }
+
+    private static int WallAutoTileShape(bool north, bool east, bool south, bool west)
+    {
+        return (west ? 0 : 1)
+            + (north ? 0 : 2)
+            + (east ? 0 : 4)
+            + (south ? 0 : 8);
     }
 
     private static Rectangle GetDestinationQuarter(RectangleF destination, int index)

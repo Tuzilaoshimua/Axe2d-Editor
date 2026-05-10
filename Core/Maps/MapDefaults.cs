@@ -7,6 +7,7 @@ public static class MapDefaults
     public const string RuleAuto4 = "Auto4";
     public const string RuleRpgMakerA1 = "RpgMakerA1";
     public const string RuleRpgMakerA2 = "RpgMakerA2";
+    public const string RuleRpgMakerA3 = "RpgMakerA3";
 
     public const string GroundLayerId = "layer.ground";
     public const string OverlayLayerId = "layer.overlay";
@@ -201,6 +202,11 @@ public static class MapDefaults
         if (string.Equals(kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase))
         {
             return TilesetRegionKinds.RpgMakerA2;
+        }
+
+        if (string.Equals(kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase))
+        {
+            return TilesetRegionKinds.RpgMakerA3;
         }
 
         if (string.Equals(kind, TilesetRegionKinds.Ignored, StringComparison.OrdinalIgnoreCase))

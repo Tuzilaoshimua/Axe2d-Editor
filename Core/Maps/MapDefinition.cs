@@ -70,6 +70,7 @@ public static class TilesetRegionKinds
     public const string Normal = "Normal";
     public const string RpgMakerA1 = "RpgMakerA1";
     public const string RpgMakerA2 = "RpgMakerA2";
+    public const string RpgMakerA3 = "RpgMakerA3";
     public const string Ignored = "Ignored";
 }
 

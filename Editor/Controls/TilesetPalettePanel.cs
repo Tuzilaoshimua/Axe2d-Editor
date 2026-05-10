@@ -305,12 +305,14 @@ public sealed class TilesetPalettePanel : Panel
         using var gridPen = new Pen(Color.FromArgb(120, 255, 255, 255));
         g.DrawRectangle(gridPen, rect);
 
-        if (entry.Kind == TilesetRegionKinds.RpgMakerA1 || entry.Kind == TilesetRegionKinds.RpgMakerA2)
+        if (entry.Kind == TilesetRegionKinds.RpgMakerA1 || entry.Kind == TilesetRegionKinds.RpgMakerA2 || entry.Kind == TilesetRegionKinds.RpgMakerA3)
         {
             using var tagBack = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
             using var tagBrush = new SolidBrush(Color.White);
             using var tagFont = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold);
-            var text = entry.Kind == TilesetRegionKinds.RpgMakerA1 ? A1EntryLabel(entry.Variant) : "A2";
+            var text = entry.Kind == TilesetRegionKinds.RpgMakerA1
+                ? A1EntryLabel(entry.Variant)
+                : entry.Kind == TilesetRegionKinds.RpgMakerA2 ? "A2" : "A3";
             var tagSize = g.MeasureString(text, tagFont);
             g.FillRectangle(tagBack, rect.Left + 3, rect.Top + 3, Math.Max(18, (int)Math.Ceiling(tagSize.Width) + 8), 16);
             g.DrawString(text, tagFont, tagBrush, rect.Left + 6, rect.Top + 3);
@@ -328,7 +330,7 @@ public sealed class TilesetPalettePanel : Panel
             return;
         }
 
-        if (_highlightBlockOrigin == entry.Tile && (entry.Kind == TilesetRegionKinds.RpgMakerA1 || entry.Kind == TilesetRegionKinds.RpgMakerA2))
+        if (_highlightBlockOrigin == entry.Tile && (entry.Kind == TilesetRegionKinds.RpgMakerA1 || entry.Kind == TilesetRegionKinds.RpgMakerA2 || entry.Kind == TilesetRegionKinds.RpgMakerA3))
         {
             using var fill = new SolidBrush(Color.FromArgb(38, 255, 170, 0));
             using var pen = new Pen(Color.FromArgb(255, 170, 0), 3f);
@@ -483,28 +485,32 @@ public sealed class TilesetPalettePanel : Panel
 
         var column = 0;
         var row = 0;
+        var rowHeight = 1;
 
         foreach (var region in autoRegions)
         {
-            if (column >= _foldedColumns)
+            var entrySize = FoldedEntrySize(region);
+            if (column + entrySize.Width > _foldedColumns)
             {
                 column = 0;
-                row++;
+                row += rowHeight;
+                rowHeight = 1;
             }
 
             var preview = PreviewTileForRegion(region, imageColumns, imageRows);
             _foldedEntries.Add(new TilesetPaletteEntry(
                 new Point(region.X, region.Y),
                 preview,
-                new Size(1, 1),
+                entrySize,
                 region.Kind,
                 region.Variant,
-                EntryRect(column, row, 1, 1),
+                EntryRect(column, row, entrySize.Width, entrySize.Height),
                 IsWaterfallRegion(region)));
-            column++;
+            column += entrySize.Width;
+            rowHeight = Math.Max(rowHeight, entrySize.Height);
         }
 
-        var normalTop = autoRegions.Count > 0 ? row + 1 : 0;
+        var normalTop = autoRegions.Count > 0 ? row + rowHeight : 0;
 
         foreach (var tile in EnumerateNormalRegionTiles(imageColumns, imageRows))
         {
@@ -540,6 +546,13 @@ public sealed class TilesetPalettePanel : Panel
         return new Rectangle(tile.X * _tileSize, (topRows + tile.Y) * _tileSize, _tileSize, _tileSize);
     }
 
+    private static Size FoldedEntrySize(TilesetRegionDefinition region)
+    {
+        return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase)
+            ? new Size(2, 2)
+            : new Size(1, 1);
+    }
+
     private bool UseFoldedRpgAutoPalette()
     {
         return _tilesetPlan is not null
@@ -549,7 +562,8 @@ public sealed class TilesetPalettePanel : Panel
     private static bool IsRpgAutoRegion(TilesetRegionDefinition region)
     {
         return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase);
+            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsWaterfallRegion(TilesetRegionDefinition region)
@@ -566,6 +580,11 @@ public sealed class TilesetPalettePanel : Panel
         {
             x = region.Variant == RpgMakerA1RegionVariants.Waterfall ? region.X : region.X + Math.Min(2, region.Width - 1);
             y = region.Y + Math.Min(1, region.Height - 1);
+        }
+        else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase))
+        {
+            x = region.X;
+            y = region.Y;
         }
 
         return new Point(
@@ -608,6 +627,7 @@ public sealed class TilesetPalettePanel : Panel
         {
             TilesetRegionKinds.RpgMakerA1 => Color.FromArgb(255, 78, 172, 255),
             TilesetRegionKinds.RpgMakerA2 => Color.FromArgb(255, 229, 126, 32),
+            TilesetRegionKinds.RpgMakerA3 => Color.FromArgb(255, 186, 104, 200),
             TilesetRegionKinds.Ignored => Color.FromArgb(255, 150, 150, 150),
             _ => Color.FromArgb(255, 38, 166, 91)
         };
@@ -627,7 +647,9 @@ public sealed class TilesetPalettePanel : Panel
             ? "A1"
             : kind == TilesetRegionKinds.RpgMakerA2
                 ? "A2"
-                : kind == TilesetRegionKinds.Ignored ? "忽略" : "普通";
+                : kind == TilesetRegionKinds.RpgMakerA3
+                    ? "A3"
+                    : kind == TilesetRegionKinds.Ignored ? "忽略" : "普通";
         var size = g.MeasureString(text, font);
         var labelRect = new RectangleF(rect.Left + 4, rect.Top + 4, size.Width + 8, size.Height + 4);
         g.FillRectangle(backBrush, labelRect);

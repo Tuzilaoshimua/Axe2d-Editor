@@ -601,13 +601,13 @@ public sealed class MapEditorForm : Form
         _tilesetInfoLabel.Text = "图集: 未导入";
         ConfigurePaletteButton(_useTerrainBrushButton, "地形", UseTerrainBrush);
         ConfigurePaletteButton(_useTilesetBrushButton, "图块", UseTilesetBrush);
-        ConfigurePaletteButton(_bindA2PaletteButton, "A2", BindSelectedTerrainToA2);
+        ConfigurePaletteButton(_bindA2PaletteButton, "绑定", BindSelectedTerrainToAutoTile);
         _useTerrainBrushButton.Tag = "使用当前地形或自动元件绘制";
         _useTilesetBrushButton.Tag = "直接使用当前选中的图集单格绘制";
-        _bindA2PaletteButton.Tag = "把当前地形绑定到选中的 RPG Maker A2 自动元件块";
+        _bindA2PaletteButton.Tag = "把当前地形绑定到选中的 RPG Maker 自动元件块";
         _toolTip.SetToolTip(_useTerrainBrushButton, "使用当前地形或自动元件绘制");
         _toolTip.SetToolTip(_useTilesetBrushButton, "直接使用当前选中的图集单格绘制");
-        _toolTip.SetToolTip(_bindA2PaletteButton, "把当前地形绑定到选中的 RPG Maker A2 自动元件块");
+        _toolTip.SetToolTip(_bindA2PaletteButton, "把当前地形绑定到选中的 RPG Maker 自动元件块");
         tilesetHeader.Controls.Add(_tilesetInfoLabel, 0, 0);
         tilesetHeader.Controls.Add(_useTerrainBrushButton, 1, 0);
         tilesetHeader.Controls.Add(_useTilesetBrushButton, 2, 0);
@@ -843,10 +843,10 @@ public sealed class MapEditorForm : Form
         _brushSizeTrack.SmallChange = 1;
         _brushSizeTrack.LargeChange = 2;
         _brushSizeTrack.Margin = new Padding(0, 2, 0, 4);
-        _brushSizeTrack.Value = _canvas.BrushSize;
+        _brushSizeTrack.Value = CurrentToolBrushSize();
         _brushSizeTrack.ValueChanged += (_, _) =>
         {
-            _canvas.BrushSize = _brushSizeTrack.Value;
+            SetCurrentToolBrushSize(_brushSizeTrack.Value);
             UpdateBrushSizePreview();
         };
 
@@ -870,7 +870,7 @@ public sealed class MapEditorForm : Form
 
     private void ShowBrushSizeMenu(int x, int y)
     {
-        _brushSizeTrack.Value = Math.Clamp(_canvas.BrushSize, _brushSizeTrack.Minimum, _brushSizeTrack.Maximum);
+        _brushSizeTrack.Value = Math.Clamp(CurrentToolBrushSize(), _brushSizeTrack.Minimum, _brushSizeTrack.Maximum);
         UpdateBrushSizePreview();
         BeginInvoke(new Action(() => _brushSizeMenu.Show(_toolStrip, new Point(x, y))));
     }
@@ -878,14 +878,14 @@ public sealed class MapEditorForm : Form
     private void ShowBrushSizeMenuFromCanvas(Point canvasLocation)
     {
         var screenPoint = _canvas.PointToScreen(canvasLocation);
-        _brushSizeTrack.Value = Math.Clamp(_canvas.BrushSize, _brushSizeTrack.Minimum, _brushSizeTrack.Maximum);
+        _brushSizeTrack.Value = Math.Clamp(CurrentToolBrushSize(), _brushSizeTrack.Minimum, _brushSizeTrack.Maximum);
         UpdateBrushSizePreview();
         _brushSizeMenu.Show(screenPoint);
     }
 
     private void UpdateBrushSizePreview()
     {
-        _brushSizeLabel.Text = $"尺寸：{_canvas.BrushSize} x {_canvas.BrushSize}";
+        _brushSizeLabel.Text = $"尺寸：{CurrentToolBrushSize()} x {CurrentToolBrushSize()}";
         _brushSizePreview.Invalidate();
         UpdateStatusText();
     }
@@ -893,7 +893,7 @@ public sealed class MapEditorForm : Form
     private void PaintBrushSizePreview(Graphics graphics, Rectangle bounds)
     {
         graphics.Clear(SystemColors.Window);
-        var brushSize = Math.Max(1, _canvas.BrushSize);
+        var brushSize = Math.Max(1, CurrentToolBrushSize());
         var availableWidth = Math.Max(16, bounds.Width - 16);
         var availableHeight = Math.Max(16, bounds.Height - 16);
         var cellSize = Math.Max(3, Math.Min(availableWidth / brushSize, availableHeight / brushSize));
@@ -1273,7 +1273,7 @@ public sealed class MapEditorForm : Form
         UpdateBrushButtons();
     }
 
-    private void BindSelectedTerrainToA2()
+    private void BindSelectedTerrainToAutoTile()
     {
         if (_selectedMap is null || _selectedTerrain is null)
         {
@@ -1282,14 +1282,38 @@ public sealed class MapEditorForm : Form
 
         if (_selectedTilesetTile.X < 0 || _selectedTilesetTile.Y < 0)
         {
-            MessageBox.Show(this, "请先在图集中选择一个 RPG Maker A2 自动元件块。", "绑定 A2 自动元件", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "请先在图集中选择一个 RPG Maker 自动元件块。", "绑定自动元件", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        var origin = RpgMakerAutoTile.SnapA2Origin(_selectedTilesetTile.X, _selectedTilesetTile.Y);
-        _selectedTerrain.Rule = MapDefaults.RuleRpgMakerA2;
+        var region = FindPlannedRegion(_selectedTilesetTile.X, _selectedTilesetTile.Y);
+        if (region is null)
+        {
+            MessageBox.Show(this, "当前选中的图块没有规划为 RPG Maker 自动元件。", "绑定自动元件", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        Point origin;
+        if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase))
+        {
+            origin = RpgMakerAutoTile.SnapA3Origin(_selectedTilesetTile.X, _selectedTilesetTile.Y);
+            _selectedTerrain.Rule = MapDefaults.RuleRpgMakerA3;
+        }
+        else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase))
+        {
+            origin = RpgMakerAutoTile.SnapA2Origin(_selectedTilesetTile.X, _selectedTilesetTile.Y);
+            _selectedTerrain.Rule = MapDefaults.RuleRpgMakerA2;
+        }
+        else
+        {
+            MessageBox.Show(this, "当前绑定按钮仅支持 RPG Maker A2/A3 自动元件。", "绑定自动元件", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         _selectedTerrain.TileX = origin.X;
         _selectedTerrain.TileY = origin.Y;
+        _selectedTerrain.Animated = false;
+        _selectedTerrain.AnimationFrames = 1;
         RefreshTerrainPalette();
         SelectTerrain(_selectedTerrain.Id);
         _canvas.Invalidate();
@@ -1384,6 +1408,12 @@ public sealed class MapEditorForm : Form
             var blockX = region.X + (tileX - region.X) / 2 * 2;
             var blockY = region.Y + (tileY - region.Y) / 3 * 3;
             terrainId = CreateA2TerrainId(blockX, blockY);
+        }
+        else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase))
+        {
+            var blockX = region.X + (tileX - region.X) / 2 * 2;
+            var blockY = region.Y + (tileY - region.Y) / 2 * 2;
+            terrainId = CreateA3TerrainId(blockX, blockY);
         }
         else
         {
@@ -1835,7 +1865,33 @@ public sealed class MapEditorForm : Form
         var animation = _canvas.AnimationEnabled
             ? T("mapEditor.animation.statusDynamic", "动态预览")
             : T("mapEditor.animation.statusStatic", "静态预览");
-        _statusLabel.Text = $"{map} | {layer} | {brush} | 画笔 {_canvas.BrushSize}x{_canvas.BrushSize} | {animation}{ShiftStatusSuffix()}{AltStatusSuffix()}";
+        _statusLabel.Text = $"{map} | {layer} | {brush} | {BrushSizeStatusText()} | {animation}{ShiftStatusSuffix()}{AltStatusSuffix()}";
+    }
+
+    private int CurrentToolBrushSize()
+    {
+        return _canvas.ActiveTool == MapEditorTool.Erase
+            ? _canvas.EraseBrushSize
+            : _canvas.PaintBrushSize;
+    }
+
+    private void SetCurrentToolBrushSize(int size)
+    {
+        if (_canvas.ActiveTool == MapEditorTool.Erase)
+        {
+            _canvas.EraseBrushSize = size;
+            return;
+        }
+
+        _canvas.PaintBrushSize = size;
+    }
+
+    private string BrushSizeStatusText()
+    {
+        var size = CurrentToolBrushSize();
+        return _canvas.ActiveTool == MapEditorTool.Erase
+            ? $"橡皮 {size}x{size}"
+            : $"画笔 {size}x{size}";
     }
 
     private string ShiftStatusSuffix()
@@ -2280,7 +2336,9 @@ public sealed class MapEditorForm : Form
             ? $" | {_selectedTerrain.DisplayName} A1 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
             : _selectedTerrain is not null && RpgMakerAutoTile.IsA2(_selectedTerrain)
                 ? $" | {_selectedTerrain.DisplayName} A2 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
-            : "";
+                : _selectedTerrain is not null && RpgMakerAutoTile.IsA3(_selectedTerrain)
+                    ? $" | {_selectedTerrain.DisplayName} A3 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
+                    : "";
         var regionCount = _selectedMap.TilesetPlan?.Regions?.Count ?? 0;
         var planText = regionCount > 0 ? $" | 区域 {regionCount}" : "";
         _tilesetInfoLabel.Text = $"图集: {name}{tileText}{autoText}{planText}";
@@ -2292,6 +2350,9 @@ public sealed class MapEditorForm : Form
             .Distinct()
             .ToList();
         var a2Origins = EnumerateA2Origins(map.TilesetPlan)
+            .Distinct()
+            .ToList();
+        var a3Origins = EnumerateA3Origins(map.TilesetPlan)
             .Distinct()
             .ToList();
         foreach (var origin in a1Origins)
@@ -2311,9 +2372,13 @@ public sealed class MapEditorForm : Form
                 return CreateA1TerrainId(v.X, v.Y, sourceRegion);
             })
             .Concat(a2Origins.Select(v => CreateA2TerrainId(v.X, v.Y)))
+            .Concat(a3Origins.Select(v => CreateA3TerrainId(v.X, v.Y)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var terrain in map.Terrains.Where(v => v.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase) || v.Rule.Equals(MapDefaults.RuleRpgMakerA2, StringComparison.OrdinalIgnoreCase)).ToList())
+        foreach (var terrain in map.Terrains.Where(v =>
+            v.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase)
+            || v.Rule.Equals(MapDefaults.RuleRpgMakerA2, StringComparison.OrdinalIgnoreCase)
+            || v.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase)).ToList())
         {
             if (!expectedIds.Contains(terrain.Id) && IsGeneratedTilesetTerrain(terrain.Id))
             {
@@ -2373,6 +2438,34 @@ public sealed class MapEditorForm : Form
             }
 
             terrain.Rule = MapDefaults.RuleRpgMakerA2;
+            terrain.TileX = origin.X;
+            terrain.TileY = origin.Y;
+        }
+
+        foreach (var origin in a3Origins)
+        {
+            var id = CreateA3TerrainId(origin.X, origin.Y);
+            var terrain = map.Terrains.FirstOrDefault(v => string.Equals(v.Id, id, StringComparison.OrdinalIgnoreCase));
+            if (terrain is null)
+            {
+                terrain = new MapTerrainDefinition
+                {
+                    Id = id,
+                    DisplayName = $"A3外墙 {origin.X},{origin.Y}",
+                    ColorHex = "#8b5cf6",
+                    EdgeColorHex = "#5b21b6"
+                };
+                map.Terrains.Add(terrain);
+            }
+            else
+            {
+                terrain.DisplayName = $"A3外墙 {origin.X},{origin.Y}";
+            }
+
+            terrain.Rule = MapDefaults.RuleRpgMakerA3;
+            terrain.Animated = false;
+            terrain.AnimationFrames = 1;
+            terrain.AnimationFps = 4;
             terrain.TileX = origin.X;
             terrain.TileY = origin.Y;
         }
@@ -2455,10 +2548,27 @@ public sealed class MapEditorForm : Form
         }
     }
 
+    private static IEnumerable<Point> EnumerateA3Origins(TilesetPlanDefinition plan)
+    {
+        foreach (var region in plan.Regions.Where(v => string.Equals(v.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase)))
+        {
+            var blockColumns = Math.Max(1, region.Width / 2);
+            var blockRows = Math.Max(1, region.Height / 2);
+            for (var row = 0; row < blockRows; row++)
+            {
+                for (var column = 0; column < blockColumns; column++)
+                {
+                    yield return new Point(region.X + column * 2, region.Y + row * 2);
+                }
+            }
+        }
+    }
+
     private static bool IsGeneratedTilesetTerrain(string id)
     {
         return id.StartsWith("terrain.tileset.a1.", StringComparison.OrdinalIgnoreCase)
-            || id.StartsWith("terrain.tileset.a2.", StringComparison.OrdinalIgnoreCase);
+            || id.StartsWith("terrain.tileset.a2.", StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("terrain.tileset.a3.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateA1TerrainId(int x, int y, TilesetRegionDefinition? region)
@@ -2504,6 +2614,11 @@ public sealed class MapEditorForm : Form
         return $"terrain.tileset.a2.{x}.{y}";
     }
 
+    private static string CreateA3TerrainId(int x, int y)
+    {
+        return $"terrain.tileset.a3.{x}.{y}";
+    }
+
     private void UpdateA2Highlight()
     {
         if (!_shiftAutoTerrainMode)
@@ -2524,6 +2639,13 @@ public sealed class MapEditorForm : Form
         {
             _tilesetPalette.HighlightBlockOrigin = new Point(_selectedTerrain.TileX, _selectedTerrain.TileY);
             _tilesetPalette.HighlightBlockSize = new Size(2, 3);
+            return;
+        }
+
+        if (_selectedTerrain is not null && RpgMakerAutoTile.IsA3(_selectedTerrain))
+        {
+            _tilesetPalette.HighlightBlockOrigin = new Point(_selectedTerrain.TileX, _selectedTerrain.TileY);
+            _tilesetPalette.HighlightBlockSize = new Size(2, 2);
             return;
         }
 
@@ -2553,6 +2675,11 @@ public sealed class MapEditorForm : Form
         if (terrain.Rule.Equals(MapDefaults.RuleRpgMakerA2, StringComparison.OrdinalIgnoreCase))
         {
             return $"{terrain.DisplayName}\r\nA2自动";
+        }
+
+        if (terrain.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{terrain.DisplayName}\r\nA3外墙";
         }
 
         if (terrain.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase))
