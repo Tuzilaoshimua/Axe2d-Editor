@@ -20,6 +20,8 @@ public sealed class MapCanvasPanel : Panel
     private Image? _tilesetImage;
     private Point _selectedTilesetTile = new(-1, -1);
     private Size _selectedTilesetTileSize = new(1, 1);
+    private List<TilesetBrushCell>? _selectedTilesetPattern;
+    private List<TerrainBrushCell>? _selectedTerrainPattern;
     private bool _selectedTilesetTileIsA1Overlay;
     private bool _paintSelectedTerrainAsTileset;
     private bool _selectedTilesetTileIsA1OverlayAnimated;
@@ -245,6 +247,7 @@ public sealed class MapCanvasPanel : Panel
     public void SetSelectedTerrain(MapTerrainDefinition? terrain)
     {
         _selectedTerrain = terrain;
+        _selectedTerrainPattern = null;
         if (terrain is not null)
         {
             UseTerrainBrush();
@@ -317,8 +320,53 @@ public sealed class MapCanvasPanel : Panel
     {
         _selectedTilesetTile = new Point(tileX, tileY);
         _selectedTilesetTileSize = new Size(Math.Max(1, width), Math.Max(1, height));
+        _selectedTilesetPattern = null;
+        _selectedTerrainPattern = null;
         _selectedTilesetTileIsA1Overlay = isA1Overlay;
         _selectedTilesetTileIsA1OverlayAnimated = isA1OverlayAnimated;
+        UpdateSelectedTerrainPaintMode();
+        Invalidate();
+    }
+
+    public void SetTilesetPatternSelection(IReadOnlyList<TilesetBrushCell> cells, bool isA1Overlay, bool isA1OverlayAnimated)
+    {
+        _selectedTilesetPattern = cells
+            .Where(cell => cell.TileX >= 0 && cell.TileY >= 0 && cell.OffsetX >= 0 && cell.OffsetY >= 0)
+            .Select(cell => new TilesetBrushCell(cell.OffsetX, cell.OffsetY, cell.TileX, cell.TileY))
+            .ToList();
+        _selectedTerrainPattern = null;
+        if (_selectedTilesetPattern.Count <= 0)
+        {
+            _selectedTilesetPattern = null;
+            return;
+        }
+
+        _selectedTilesetTile = new Point(_selectedTilesetPattern[0].TileX, _selectedTilesetPattern[0].TileY);
+        _selectedTilesetTileSize = new Size(
+            _selectedTilesetPattern.Max(cell => cell.OffsetX) + 1,
+            _selectedTilesetPattern.Max(cell => cell.OffsetY) + 1);
+        _selectedTilesetTileIsA1Overlay = isA1Overlay;
+        _selectedTilesetTileIsA1OverlayAnimated = isA1OverlayAnimated;
+        UpdateSelectedTerrainPaintMode();
+        Invalidate();
+    }
+
+    public void SetTerrainPatternSelection(IReadOnlyList<TerrainBrushCell> cells)
+    {
+        _selectedTerrainPattern = cells
+            .Where(cell => !string.IsNullOrWhiteSpace(cell.TerrainId) && cell.OffsetX >= 0 && cell.OffsetY >= 0)
+            .Select(cell => new TerrainBrushCell(cell.OffsetX, cell.OffsetY, cell.TerrainId, cell.Tag))
+            .ToList();
+        _selectedTilesetPattern = null;
+        if (_selectedTerrainPattern.Count <= 0)
+        {
+            _selectedTerrainPattern = null;
+            return;
+        }
+
+        _selectedTilesetTileSize = new Size(
+            _selectedTerrainPattern.Max(cell => cell.OffsetX) + 1,
+            _selectedTerrainPattern.Max(cell => cell.OffsetY) + 1);
         UpdateSelectedTerrainPaintMode();
         Invalidate();
     }
@@ -612,7 +660,10 @@ public sealed class MapCanvasPanel : Panel
             terrains.TryGetValue(cell.TerrainId, out var terrain);
 
             var rect = CellToScreenRect(cell.X, cell.Y);
-            var usesRpgMakerAutoTile = RpgMakerAutoTile.IsA1(terrain) || RpgMakerAutoTile.IsA2(terrain) || RpgMakerAutoTile.IsA3(terrain);
+            var usesRpgMakerAutoTile = RpgMakerAutoTile.IsA1(terrain)
+                || RpgMakerAutoTile.IsA2(terrain)
+                || RpgMakerAutoTile.IsA3(terrain)
+                || RpgMakerAutoTile.IsA4(terrain);
             var animationTick = EffectiveAnimationTick;
             var drawnFromTileset = RpgMakerAutoTile.IsA1(terrain)
                 && terrain is not null
@@ -623,6 +674,9 @@ public sealed class MapCanvasPanel : Panel
             drawnFromTileset = drawnFromTileset || (RpgMakerAutoTile.IsA3(terrain)
                 && terrain is not null
                 && RpgMakerAutoTile.DrawA3(g, _tilesetImage, _map.TileSize, rect, cell, terrain, lookup, layer.Opacity));
+            drawnFromTileset = drawnFromTileset || (RpgMakerAutoTile.IsA4(terrain)
+                && terrain is not null
+                && RpgMakerAutoTile.DrawA4(g, _tilesetImage, _map.TileSize, rect, cell, terrain, lookup, layer.Opacity));
             if (!drawnFromTileset && !usesRpgMakerAutoTile)
             {
                 drawnFromTileset = DrawTilesetTile(g, rect, cell, terrain, layer.Opacity);
@@ -926,6 +980,28 @@ public sealed class MapCanvasPanel : Panel
     private bool SetCells(MapLayerDefinition layer, int x, int y)
     {
         var changed = false;
+        if (_brushSource == MapBrushSource.Terrain && _selectedTerrainPattern is { Count: > 0 })
+        {
+            foreach (var patternCell in _selectedTerrainPattern)
+            {
+                changed |= IsSystemLayer(layer)
+                    ? SetCell(layer, x + patternCell.OffsetX, y + patternCell.OffsetY)
+                    : SetTerrainCell(layer, x + patternCell.OffsetX, y + patternCell.OffsetY, patternCell.TerrainId, patternCell.Tag);
+            }
+
+            return changed;
+        }
+
+        if (_brushSource == MapBrushSource.Tileset && _selectedTilesetPattern is { Count: > 0 })
+        {
+            foreach (var patternCell in _selectedTilesetPattern)
+            {
+                changed |= SetCell(layer, x + patternCell.OffsetX, y + patternCell.OffsetY, patternCell.TileX, patternCell.TileY);
+            }
+
+            return changed;
+        }
+
         if (_brushSource == MapBrushSource.Tileset && (_selectedTilesetTileSize.Width > 1 || _selectedTilesetTileSize.Height > 1))
         {
             for (var offsetY = 0; offsetY < _selectedTilesetTileSize.Height; offsetY++)
@@ -940,6 +1016,44 @@ public sealed class MapCanvasPanel : Panel
         }
 
         return SetCell(layer, x, y);
+    }
+
+    private static bool IsSystemLayer(MapLayerDefinition layer)
+    {
+        return layer.Kind.Equals("Collision", StringComparison.OrdinalIgnoreCase)
+            || layer.Kind.Equals("Region", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool SetTerrainCell(MapLayerDefinition layer, int x, int y, string terrainId, string tag)
+    {
+        if (_map is null || x < 0 || y < 0 || x >= _map.Width || y >= _map.Height)
+        {
+            return false;
+        }
+
+        var existing = layer.Tiles.FirstOrDefault(v => v.X == x && v.Y == y);
+        if (existing is null)
+        {
+            existing = new MapTileCell { X = x, Y = y };
+            layer.Tiles.Add(existing);
+        }
+
+        tag ??= string.Empty;
+        if (existing.TerrainId == terrainId
+            && existing.TileX == -1
+            && existing.TileY == -1
+            && existing.Tag == tag
+            && !existing.Solid)
+        {
+            return false;
+        }
+
+        existing.TerrainId = terrainId;
+        existing.TileX = -1;
+        existing.TileY = -1;
+        existing.Tag = tag;
+        existing.Solid = false;
+        return true;
     }
 
     private bool SetCell(MapLayerDefinition layer, int x, int y, int? overrideTileX = null, int? overrideTileY = null)
@@ -1054,9 +1168,11 @@ public sealed class MapCanvasPanel : Panel
             return true;
         }
 
-        if (ShouldPaintSelectedA3FixedShape())
+        if (ShouldPaintSelectedA3FixedShape() || ShouldPaintSelectedA4FixedWallShape())
         {
-            var tag = RpgMakerAutoTile.A3FixedShapeTag(RpgMakerAutoTile.A3StandaloneShape);
+            var tag = ShouldPaintSelectedA3FixedShape()
+                ? RpgMakerAutoTile.A3FixedShapeTag(RpgMakerAutoTile.A3StandaloneShape)
+                : RpgMakerAutoTile.A4FixedShapeTag(RpgMakerAutoTile.A4WallInteriorShape);
             if (existing.TerrainId == _selectedTerrain!.Id
                 && existing.TileX == -1
                 && existing.TileY == -1
@@ -1217,6 +1333,8 @@ public sealed class MapCanvasPanel : Panel
             ? $"atlas:{_selectedTilesetTile.X},{_selectedTilesetTile.Y}"
             : ShouldPaintSelectedA3FixedShape()
                 ? $"{_selectedTerrain!.Id}|{RpgMakerAutoTile.A3FixedShapeTag(RpgMakerAutoTile.A3StandaloneShape)}"
+            : ShouldPaintSelectedA4FixedWallShape()
+                ? $"{_selectedTerrain!.Id}|{RpgMakerAutoTile.A4FixedShapeTag(RpgMakerAutoTile.A4WallInteriorShape)}"
             : _selectedTerrain?.Id ?? string.Empty;
     }
 
@@ -1231,6 +1349,13 @@ public sealed class MapCanvasPanel : Panel
         return _brushSource == MapBrushSource.Terrain
             && _shiftAutoTerrainMode
             && RpgMakerAutoTile.IsA3(_selectedTerrain);
+    }
+
+    private bool ShouldPaintSelectedA4FixedWallShape()
+    {
+        return _brushSource == MapBrushSource.Terrain
+            && _shiftAutoTerrainMode
+            && RpgMakerAutoTile.IsA4Wall(_selectedTerrain);
     }
 
     private void UpdateSelectedTerrainPaintMode()
@@ -1328,9 +1453,39 @@ public sealed class MapCanvasPanel : Panel
         var brushSize = CurrentBrushSize;
         var left = center.X - (brushSize / 2);
         var top = center.Y - (brushSize / 2);
+        var footprint = GetBrushFootprintSize();
         var topLeft = WorldToScreen(left, top);
-        var bottomRight = WorldToScreen(left + brushSize, top + brushSize);
+        var bottomRight = WorldToScreen(left + brushSize + footprint.Width - 1, top + brushSize + footprint.Height - 1);
         return RectangleF.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+    }
+
+    private Size GetBrushFootprintSize()
+    {
+        if (_activeTool != MapEditorTool.Paint)
+        {
+            return new Size(1, 1);
+        }
+
+        if (_brushSource == MapBrushSource.Terrain && _selectedTerrainPattern is { Count: > 0 })
+        {
+            return new Size(
+                _selectedTerrainPattern.Max(cell => cell.OffsetX) + 1,
+                _selectedTerrainPattern.Max(cell => cell.OffsetY) + 1);
+        }
+
+        if (_brushSource == MapBrushSource.Tileset && _selectedTilesetPattern is { Count: > 0 })
+        {
+            return new Size(
+                _selectedTilesetPattern.Max(cell => cell.OffsetX) + 1,
+                _selectedTilesetPattern.Max(cell => cell.OffsetY) + 1);
+        }
+
+        if (_brushSource == MapBrushSource.Tileset && _selectedTilesetTile.X >= 0 && _selectedTilesetTile.Y >= 0)
+        {
+            return _selectedTilesetTileSize;
+        }
+
+        return new Size(1, 1);
     }
 
     private PointF WorldToScreen(float x, float y)
@@ -1675,6 +1830,10 @@ public enum MapBrushSource
     Terrain,
     Tileset
 }
+
+public sealed record TilesetBrushCell(int OffsetX, int OffsetY, int TileX, int TileY);
+
+public sealed record TerrainBrushCell(int OffsetX, int OffsetY, string TerrainId, string Tag = "");
 
 public sealed class MapTileHoverEventArgs : EventArgs
 {

@@ -8,6 +8,7 @@ public static class MapDefaults
     public const string RuleRpgMakerA1 = "RpgMakerA1";
     public const string RuleRpgMakerA2 = "RpgMakerA2";
     public const string RuleRpgMakerA3 = "RpgMakerA3";
+    public const string RuleRpgMakerA4 = "RpgMakerA4";
 
     public const string GroundLayerId = "layer.ground";
     public const string OverlayLayerId = "layer.overlay";
@@ -209,6 +210,11 @@ public static class MapDefaults
             return TilesetRegionKinds.RpgMakerA3;
         }
 
+        if (string.Equals(kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            return TilesetRegionKinds.RpgMakerA4;
+        }
+
         if (string.Equals(kind, TilesetRegionKinds.Ignored, StringComparison.OrdinalIgnoreCase))
         {
             return TilesetRegionKinds.Ignored;
@@ -219,6 +225,13 @@ public static class MapDefaults
 
     private static string NormalizeTilesetRegionVariant(string kind, string? variant)
     {
+        if (string.Equals(kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase)
+                ? RpgMakerA4RegionVariants.Wall
+                : RpgMakerA4RegionVariants.Roof;
+        }
+
         if (!string.Equals(kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase))
         {
             return string.Empty;

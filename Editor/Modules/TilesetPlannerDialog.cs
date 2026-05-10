@@ -319,18 +319,20 @@ public sealed class TilesetPlannerDialog : Form
         var isRpgMaker = string.Equals(_mode, TilesetPlanModes.RpgMaker, StringComparison.OrdinalIgnoreCase);
         var showRpgControls = isRpgMaker;
         var isA1Kind = isRpgMaker && string.Equals(_rpgKind, RpgMakerTilesetKinds.A1, StringComparison.OrdinalIgnoreCase);
-        var canUseA1Region = string.Equals(_mode, TilesetPlanModes.Advanced, StringComparison.OrdinalIgnoreCase)
-            || isA1Kind;
-        var canUseA2Region = string.Equals(_mode, TilesetPlanModes.Advanced, StringComparison.OrdinalIgnoreCase)
-            || (isRpgMaker && string.Equals(_rpgKind, RpgMakerTilesetKinds.A2, StringComparison.OrdinalIgnoreCase));
         var isA3Kind = isRpgMaker && string.Equals(_rpgKind, RpgMakerTilesetKinds.A3, StringComparison.OrdinalIgnoreCase);
+        var isA4Kind = isRpgMaker && string.Equals(_rpgKind, RpgMakerTilesetKinds.A4, StringComparison.OrdinalIgnoreCase);
 
         _rpgKindCombo.Enabled = isRpgMaker;
         SetPlanRowVisible(1, showRpgControls);
         SetPlanRowVisible(2, showRpgControls && isA1Kind);
         SetPlanRowVisible(3, showRpgControls);
         _a1VariantCombo.Enabled = isA1Kind;
-        _autoRpgButton.Enabled = isRpgMaker && (isA1Kind || string.Equals(_rpgKind, RpgMakerTilesetKinds.A2, StringComparison.OrdinalIgnoreCase) || isA3Kind);
+        _autoRpgButton.Enabled = isRpgMaker
+            && (isA1Kind
+                || string.Equals(_rpgKind, RpgMakerTilesetKinds.A2, StringComparison.OrdinalIgnoreCase)
+                || isA3Kind
+                || isA4Kind
+                || string.Equals(_rpgKind, RpgMakerTilesetKinds.A5, StringComparison.OrdinalIgnoreCase));
         _clearA2Button.Enabled = _regions.Any(IsRpgAutoRegion);
 
         _hintLabel.Text = isRpgMaker && isA1Kind
@@ -339,8 +341,12 @@ public sealed class TilesetPlannerDialog : Form
             ? "RM 标准 A2: 每 4x3 为一组，自动生成左右两个 2x3 自动元件块；左侧面板会折叠显示可绘制代表瓦片。"
             : isA3Kind
             ? "RM 标准 A3: 建筑外墙按官方 16x8 格布局生成，每个自动元件为 2x2。"
+            : isA4Kind
+            ? "RM 标准 A4: 墙壁/屋顶按官方 16x15 格布局生成，屋顶为 2x3，墙面为 2x2。"
+            : isRpgMaker && string.Equals(_rpgKind, RpgMakerTilesetKinds.A5, StringComparison.OrdinalIgnoreCase)
+            ? "RM 标准 A5: 普通瓦片按 8x16 单格区域生成。"
             : isRpgMaker
-                ? "RM 自定义布局: 可手动框选普通区域、A1/A2/A3 自动元件区域或忽略区域。"
+                ? "RM 自定义布局: 可手动框选普通区域、A1/A2/A3/A4 自动元件区域或忽略区域。"
                 : "普通模式: 直接按单格图块绘制；需要自动边缘时可切到 RPG Maker 或高级模式。";
     }
 
@@ -385,7 +391,7 @@ public sealed class TilesetPlannerDialog : Form
     {
         if (!string.Equals(_mode, TilesetPlanModes.RpgMaker, StringComparison.OrdinalIgnoreCase))
         {
-            MessageBox.Show(this, "目前支持 RPG Maker 标准 A1/A2/A3 的自动生成。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "目前支持 RPG Maker 标准 A1/A2/A3/A4/A5 的自动生成。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -403,9 +409,21 @@ public sealed class TilesetPlannerDialog : Form
             return;
         }
 
+        if (string.Equals(_rpgKind, RpgMakerTilesetKinds.A4, StringComparison.OrdinalIgnoreCase))
+        {
+            GenerateStandardA4Regions(columns, rows);
+            return;
+        }
+
+        if (string.Equals(_rpgKind, RpgMakerTilesetKinds.A5, StringComparison.OrdinalIgnoreCase))
+        {
+            GenerateStandardA5Regions(columns, rows);
+            return;
+        }
+
         if (!string.Equals(_rpgKind, RpgMakerTilesetKinds.A2, StringComparison.OrdinalIgnoreCase))
         {
-            MessageBox.Show(this, "目前只支持 RPG Maker 标准 A1/A2/A3 的自动生成。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "目前只支持 RPG Maker 标准 A1/A2/A3/A4/A5 的自动生成。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -446,6 +464,61 @@ public sealed class TilesetPlannerDialog : Form
                 AddGeneratedA3Region(x, y);
             }
         }
+
+        RefreshRegionList();
+        _canvas.Invalidate();
+        UpdatePlanControls();
+    }
+
+    private void GenerateStandardA4Regions(int columns, int rows)
+    {
+        if (columns < 16 || rows < 15)
+        {
+            MessageBox.Show(this, "标准 A4 至少需要 16x15 个瓦片格。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        _regions.RemoveAll(v => string.Equals(v.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase));
+        int[] originRows = [0, 3, 5, 8, 10, 13];
+        foreach (var y in originRows)
+        {
+            var isWall = IsOfficialA4WallRow(y);
+            var height = isWall ? 2 : 3;
+            if (y + height > Math.Min(rows, 15))
+            {
+                continue;
+            }
+
+            for (var x = 0; x + 2 <= Math.Min(columns, 16); x += 2)
+            {
+                AddGeneratedA4Region(x, y, height, isWall ? RpgMakerA4RegionVariants.Wall : RpgMakerA4RegionVariants.Roof);
+            }
+        }
+
+        RefreshRegionList();
+        _canvas.Invalidate();
+        UpdatePlanControls();
+    }
+
+    private void GenerateStandardA5Regions(int columns, int rows)
+    {
+        if (columns < 8 || rows < 16)
+        {
+            MessageBox.Show(this, "标准 A5 至少需要 8x16 个瓦片格。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        _regions.RemoveAll(v => string.Equals(v.Kind, TilesetRegionKinds.Normal, StringComparison.OrdinalIgnoreCase));
+        _regions.Add(new TilesetRegionDefinition
+        {
+            Id = $"tileset.region.a5.0.0.{Guid.NewGuid():N}",
+            Name = "RM A5 普通瓦片",
+            Kind = TilesetRegionKinds.Normal,
+            X = 0,
+            Y = 0,
+            Width = Math.Min(columns, 8),
+            Height = Math.Min(rows, 16)
+        });
 
         RefreshRegionList();
         _canvas.Invalidate();
@@ -525,6 +598,21 @@ public sealed class TilesetPlannerDialog : Form
         });
     }
 
+    private void AddGeneratedA4Region(int x, int y, int height, string variant)
+    {
+        _regions.Add(new TilesetRegionDefinition
+        {
+            Id = $"tileset.region.a4.{x}.{y}.{Guid.NewGuid():N}",
+            Name = variant == RpgMakerA4RegionVariants.Wall ? $"RM A4 墙面 {x},{y}" : $"RM A4 屋顶 {x},{y}",
+            Kind = TilesetRegionKinds.RpgMakerA4,
+            Variant = variant,
+            X = x,
+            Y = y,
+            Width = 2,
+            Height = height
+        });
+    }
+
     private void AddGeneratedA1Region(int x, int y)
     {
         _regions.Add(new TilesetRegionDefinition
@@ -588,6 +676,21 @@ public sealed class TilesetPlannerDialog : Form
         if (kind == TilesetRegionKinds.RpgMakerA3 && (selection.Width % 2 != 0 || selection.Height % 2 != 0))
         {
             MessageBox.Show(this, "RPG Maker A3 区域必须由完整的 2x2 建筑外墙自动元件块组成。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (kind == TilesetRegionKinds.RpgMakerA4 && !IsValidA4Selection(selection))
+        {
+            MessageBox.Show(this, "RPG Maker A4 选区必须按官方块对齐：屋顶 2x3，墙面 2x2。", "图集规划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (kind == TilesetRegionKinds.RpgMakerA4)
+        {
+            AddA4SelectionRegions(selection);
+            RefreshRegionList();
+            _canvas.Invalidate();
+            UpdatePlanControls();
             return;
         }
 
@@ -668,6 +771,11 @@ public sealed class TilesetPlannerDialog : Form
             {
                 return TilesetRegionKinds.RpgMakerA3;
             }
+
+            if (string.Equals(_rpgKind, RpgMakerTilesetKinds.A4, StringComparison.OrdinalIgnoreCase))
+            {
+                return TilesetRegionKinds.RpgMakerA4;
+            }
         }
 
         return TilesetRegionKinds.Normal;
@@ -699,6 +807,11 @@ public sealed class TilesetPlannerDialog : Form
 
     private static string CreateRegionVariant(string kind, Rectangle selection, string selectedVariant)
     {
+        if (string.Equals(kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            return IsOfficialA4WallRow(selection.Y) ? RpgMakerA4RegionVariants.Wall : RpgMakerA4RegionVariants.Roof;
+        }
+
         if (!string.Equals(kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase))
         {
             return string.Empty;
@@ -714,16 +827,64 @@ public sealed class TilesetPlannerDialog : Form
             TilesetRegionKinds.RpgMakerA1 => "RPG A1",
             TilesetRegionKinds.RpgMakerA2 => "RPG A2",
             TilesetRegionKinds.RpgMakerA3 => "RPG A3",
+            TilesetRegionKinds.RpgMakerA4 => "RPG A4",
             TilesetRegionKinds.Ignored => "忽略",
             _ => "普通"
         };
+    }
+
+    private static bool IsOfficialA4WallRow(int y)
+    {
+        return y is 3 or 8 or 13;
+    }
+
+    private static bool IsValidA4Selection(Rectangle selection)
+    {
+        if (selection.Width % 2 != 0)
+        {
+            return false;
+        }
+
+        var rows = EnumerateA4Rows(selection).ToList();
+        if (rows.Count <= 0)
+        {
+            return false;
+        }
+
+        return rows[0].Y == selection.Y && rows[^1].Y + rows[^1].Height == selection.Bottom;
+    }
+
+    private void AddA4SelectionRegions(Rectangle selection)
+    {
+        foreach (var row in EnumerateA4Rows(selection))
+        {
+            for (var x = selection.X; x < selection.Right; x += 2)
+            {
+                AddGeneratedA4Region(x, row.Y, row.Height, row.Variant);
+            }
+        }
+    }
+
+    private static IEnumerable<A4Row> EnumerateA4Rows(Rectangle selection)
+    {
+        int[] originRows = [0, 3, 5, 8, 10, 13];
+        foreach (var y in originRows)
+        {
+            var isWall = IsOfficialA4WallRow(y);
+            var height = isWall ? 2 : 3;
+            if (y >= selection.Y && y + height <= selection.Bottom)
+            {
+                yield return new A4Row(y, height, isWall ? RpgMakerA4RegionVariants.Wall : RpgMakerA4RegionVariants.Roof);
+            }
+        }
     }
 
     private static bool IsRpgAutoRegion(TilesetRegionDefinition region)
     {
         return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase)
             || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase);
+            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<TilesetRegionDefinition> CloneRegions(IEnumerable<TilesetRegionDefinition> regions)
@@ -743,6 +904,8 @@ public sealed class TilesetPlannerDialog : Form
             .ToList();
     }
 }
+
+internal sealed record A4Row(int Y, int Height, string Variant);
 
 internal sealed class TilesetPlannerCanvas : Panel
 {
@@ -941,6 +1104,7 @@ internal sealed class TilesetPlannerCanvas : Panel
             TilesetRegionKinds.RpgMakerA1 => Color.FromArgb(255, 78, 172, 255),
             TilesetRegionKinds.RpgMakerA2 => Color.FromArgb(255, 229, 126, 32),
             TilesetRegionKinds.RpgMakerA3 => Color.FromArgb(255, 186, 104, 200),
+            TilesetRegionKinds.RpgMakerA4 => Color.FromArgb(255, 121, 134, 203),
             TilesetRegionKinds.Ignored => Color.FromArgb(255, 145, 145, 145),
             _ => Color.FromArgb(255, 38, 166, 91)
         };
@@ -962,7 +1126,9 @@ internal sealed class TilesetPlannerCanvas : Panel
                 ? "A2"
                 : region.Kind == TilesetRegionKinds.RpgMakerA3
                     ? "A3"
-                    : region.Kind == TilesetRegionKinds.Ignored ? "-" : "普通";
+                    : region.Kind == TilesetRegionKinds.RpgMakerA4
+                        ? A4RegionLabel(region)
+                        : region.Kind == TilesetRegionKinds.Ignored ? "-" : "普通";
         var size = g.MeasureString(text, font);
         var labelRect = new RectangleF(rect.Left + 4, rect.Top + 4, size.Width + 8, size.Height + 4);
         g.FillRectangle(backBrush, labelRect);
@@ -979,6 +1145,13 @@ internal sealed class TilesetPlannerCanvas : Panel
             RpgMakerA1RegionVariants.Waterfall => "E瀑布",
             _ => "D水面"
         };
+    }
+
+    private static string A4RegionLabel(TilesetRegionDefinition region)
+    {
+        return string.Equals(region.Variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase)
+            ? "A4墙"
+            : "A4顶";
     }
 }
 

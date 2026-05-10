@@ -71,6 +71,7 @@ public static class TilesetRegionKinds
     public const string RpgMakerA1 = "RpgMakerA1";
     public const string RpgMakerA2 = "RpgMakerA2";
     public const string RpgMakerA3 = "RpgMakerA3";
+    public const string RpgMakerA4 = "RpgMakerA4";
     public const string Ignored = "Ignored";
 }
 
@@ -81,6 +82,12 @@ public static class RpgMakerA1RegionVariants
     public const string OceanDecor = "OceanDecor";
     public const string Water = "Water";
     public const string Waterfall = "Waterfall";
+}
+
+public static class RpgMakerA4RegionVariants
+{
+    public const string Roof = "Roof";
+    public const string Wall = "Wall";
 }
 
 public static class TilesetPlanModes

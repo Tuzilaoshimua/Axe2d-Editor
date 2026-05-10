@@ -5,6 +5,14 @@ namespace Axe2DEditor.Editor.Controls;
 
 public sealed class TilesetPalettePanel : Panel
 {
+    private static readonly Point[] A4WallPreviewQuarters =
+    [
+        new(0, 0),
+        new(3, 0),
+        new(0, 3),
+        new(3, 3)
+    ];
+
     private Image? _image;
     private int _tileSize = 32;
     private Point _selectedTile = new(-1, -1);
@@ -16,8 +24,12 @@ public sealed class TilesetPalettePanel : Panel
     private List<TilesetPaletteEntry> _foldedEntries = [];
     private int _foldedColumns = 1;
     private bool _dragSelecting;
+    private bool _foldedDragSelecting;
+    private bool _foldedDragMoved;
     private bool _showShiftAutoTerrainMode;
     private Point _dragStartTile = new(-1, -1);
+    private Point _foldedDragStartCell = new(-1, -1);
+    private Rectangle _foldedSelectionRect = Rectangle.Empty;
 
     public event EventHandler<TilesetTileSelectedEventArgs>? TileSelected;
 
@@ -132,7 +144,17 @@ public sealed class TilesetPalettePanel : Panel
 
         if (UseFoldedRpgAutoPalette())
         {
-            SelectFoldedEntry(e.Location);
+            var cell = HitFoldedCell(e.Location);
+            if (cell.X < 0 || cell.Y < 0)
+            {
+                return;
+            }
+
+            _foldedDragSelecting = true;
+            _foldedDragMoved = false;
+            _foldedDragStartCell = cell;
+            _foldedSelectionRect = Rectangle.Empty;
+            Capture = true;
             return;
         }
 
@@ -144,12 +166,31 @@ public sealed class TilesetPalettePanel : Panel
 
         _dragSelecting = true;
         _dragStartTile = tile;
+        Capture = true;
         SelectTileRange(tile, tile);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (_foldedDragSelecting && UseFoldedRpgAutoPalette())
+        {
+            var cell = HitFoldedCell(e.Location);
+            if (cell.X < 0 || cell.Y < 0)
+            {
+                return;
+            }
+
+            if (cell != _foldedDragStartCell)
+            {
+                _foldedDragMoved = true;
+                _foldedSelectionRect = FoldedCellRangeRect(_foldedDragStartCell, cell);
+                Invalidate();
+            }
+
+            return;
+        }
+
         if (!_dragSelecting || _image is null || UseFoldedRpgAutoPalette())
         {
             return;
@@ -167,7 +208,27 @@ public sealed class TilesetPalettePanel : Panel
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (_foldedDragSelecting)
+        {
+            var cell = HitFoldedCell(e.Location);
+            if (_foldedDragMoved && cell.X >= 0 && cell.Y >= 0)
+            {
+                SelectFoldedRange(_foldedDragStartCell, cell);
+            }
+            else
+            {
+                SelectFoldedEntry(e.Location);
+            }
+
+            _foldedDragSelecting = false;
+            _foldedDragMoved = false;
+            _foldedDragStartCell = new Point(-1, -1);
+            Capture = false;
+            return;
+        }
+
         _dragSelecting = false;
+        Capture = false;
     }
 
     private void SelectTileRange(Point start, Point end)
@@ -200,6 +261,30 @@ public sealed class TilesetPalettePanel : Panel
         var x = point.X - AutoScrollPosition.X;
         var y = point.Y - AutoScrollPosition.Y;
         if (x < 0 || y < 0 || x >= _image.Width || y >= _image.Height)
+        {
+            return new Point(-1, -1);
+        }
+
+        return new Point(x / _tileSize, y / _tileSize);
+    }
+
+    private Point HitFoldedCell(Point point)
+    {
+        if (_image is null || _foldedEntries.Count <= 0)
+        {
+            return new Point(-1, -1);
+        }
+
+        var x = point.X - AutoScrollPosition.X;
+        var y = point.Y - AutoScrollPosition.Y;
+        if (x < 0 || y < 0)
+        {
+            return new Point(-1, -1);
+        }
+
+        var right = _foldedEntries.Max(v => v.DisplayRect.Right);
+        var bottom = _foldedEntries.Max(v => v.DisplayRect.Bottom);
+        if (x >= right || y >= bottom)
         {
             return new Point(-1, -1);
         }
@@ -258,10 +343,47 @@ public sealed class TilesetPalettePanel : Panel
 
             _selectedTile = entry.Tile;
             _selectedTileSize = entry.SourceSize;
+            _foldedSelectionRect = Rectangle.Empty;
             TileSelected?.Invoke(this, new TilesetTileSelectedEventArgs(entry.Tile.X, entry.Tile.Y, entry.SourceSize.Width, entry.SourceSize.Height));
             Invalidate();
             return;
         }
+    }
+
+    private void SelectFoldedRange(Point startCell, Point endCell)
+    {
+        var displayRect = FoldedCellRangeRect(startCell, endCell);
+        var entries = _foldedEntries
+            .Where(entry => entry.DisplayRect.IntersectsWith(displayRect))
+            .ToList();
+        if (entries.Count <= 0)
+        {
+            return;
+        }
+
+        var left = entries.Min(entry => entry.Tile.X);
+        var top = entries.Min(entry => entry.Tile.Y);
+        var right = entries.Max(entry => entry.Tile.X + entry.SourceSize.Width);
+        var bottom = entries.Max(entry => entry.Tile.Y + entry.SourceSize.Height);
+
+        _selectedTile = new Point(left, top);
+        _selectedTileSize = new Size(Math.Max(1, right - left), Math.Max(1, bottom - top));
+        _foldedSelectionRect = displayRect;
+        var pattern = entries
+            .Select(entry => new TilesetBrushCell(
+                Math.Max(0, (entry.DisplayRect.Left - displayRect.Left) / _tileSize),
+                Math.Max(0, (entry.DisplayRect.Top - displayRect.Top) / _tileSize),
+                entry.Tile.X,
+                entry.Tile.Y))
+            .ToList();
+        TileSelected?.Invoke(this, new TilesetTileSelectedEventArgs(
+            _selectedTile.X,
+            _selectedTile.Y,
+            _selectedTileSize.Width,
+            _selectedTileSize.Height,
+            preferTilesetBrush: true,
+            pattern: pattern));
+        Invalidate();
     }
 
     private void DrawFoldedRpgAutoPalette(Graphics g)
@@ -278,6 +400,10 @@ public sealed class TilesetPalettePanel : Panel
             {
                 DrawWaterfallPreview(g, dest, entry.PreviewTile);
             }
+            else if (IsA4WallEntry(entry))
+            {
+                DrawA4WallPreview(g, dest, entry.PreviewTile);
+            }
             else
             {
                 var source = new Rectangle(
@@ -290,6 +416,8 @@ public sealed class TilesetPalettePanel : Panel
             DrawFoldedEntryFrame(g, dest, entry);
         }
 
+        DrawFoldedDragSelection(g, offset);
+
         if (_foldedEntries.Count <= 0)
         {
             using var brush = new SolidBrush(Color.FromArgb(190, 190, 190));
@@ -300,19 +428,53 @@ public sealed class TilesetPalettePanel : Panel
         }
     }
 
+    private void DrawFoldedDragSelection(Graphics g, Point offset)
+    {
+        if (_foldedSelectionRect.IsEmpty)
+        {
+            return;
+        }
+
+        var rect = new Rectangle(
+            offset.X + _foldedSelectionRect.X,
+            offset.Y + _foldedSelectionRect.Y,
+            _foldedSelectionRect.Width,
+            _foldedSelectionRect.Height);
+        using var fill = new SolidBrush(Color.FromArgb(48, 0, 120, 215));
+        using var pen = new Pen(Color.FromArgb(255, 0, 120, 215), 3f);
+        g.FillRectangle(fill, rect);
+        g.DrawRectangle(pen, rect);
+    }
+
+    private void DrawA4WallPreview(Graphics g, Rectangle dest, Point previewTile)
+    {
+        if (_image is null)
+        {
+            return;
+        }
+
+        var half = _tileSize / 2;
+        var sourceTileX = previewTile.X * _tileSize;
+        var sourceTileY = previewTile.Y * _tileSize;
+        for (var index = 0; index < A4WallPreviewQuarters.Length; index++)
+        {
+            var source = A4WallPreviewQuarters[index];
+            var sourceRect = new Rectangle(sourceTileX + source.X * half, sourceTileY + source.Y * half, half, half);
+            g.DrawImage(_image, GetDestinationQuarter(dest, index), sourceRect, GraphicsUnit.Pixel);
+        }
+    }
+
     private void DrawFoldedEntryFrame(Graphics g, Rectangle rect, TilesetPaletteEntry entry)
     {
         using var gridPen = new Pen(Color.FromArgb(120, 255, 255, 255));
         g.DrawRectangle(gridPen, rect);
 
-        if (entry.Kind == TilesetRegionKinds.RpgMakerA1 || entry.Kind == TilesetRegionKinds.RpgMakerA2 || entry.Kind == TilesetRegionKinds.RpgMakerA3)
+        if (IsRpgAutoRegionKind(entry.Kind) && !IsA4RegionKind(entry.Kind))
         {
             using var tagBack = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
             using var tagBrush = new SolidBrush(Color.White);
             using var tagFont = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold);
-            var text = entry.Kind == TilesetRegionKinds.RpgMakerA1
-                ? A1EntryLabel(entry.Variant)
-                : entry.Kind == TilesetRegionKinds.RpgMakerA2 ? "A2" : "A3";
+            var text = EntryLabel(entry.Kind, entry.Variant);
             var tagSize = g.MeasureString(text, tagFont);
             g.FillRectangle(tagBack, rect.Left + 3, rect.Top + 3, Math.Max(18, (int)Math.Ceiling(tagSize.Width) + 8), 16);
             g.DrawString(text, tagFont, tagBrush, rect.Left + 6, rect.Top + 3);
@@ -330,7 +492,7 @@ public sealed class TilesetPalettePanel : Panel
             return;
         }
 
-        if (_highlightBlockOrigin == entry.Tile && (entry.Kind == TilesetRegionKinds.RpgMakerA1 || entry.Kind == TilesetRegionKinds.RpgMakerA2 || entry.Kind == TilesetRegionKinds.RpgMakerA3))
+        if (_highlightBlockOrigin == entry.Tile && IsRpgAutoRegionKind(entry.Kind))
         {
             using var fill = new SolidBrush(Color.FromArgb(38, 255, 170, 0));
             using var pen = new Pen(Color.FromArgb(255, 170, 0), 3f);
@@ -468,6 +630,7 @@ public sealed class TilesetPalettePanel : Panel
     private void RebuildFoldedEntries()
     {
         _foldedEntries = [];
+        _foldedSelectionRect = Rectangle.Empty;
         if (_image is null || !UseFoldedRpgAutoPalette())
         {
             AutoScrollMinSize = _image is null ? Size.Empty : new Size(_image.Width + 1, _image.Height + 1);
@@ -479,8 +642,10 @@ public sealed class TilesetPalettePanel : Panel
         _foldedColumns = Math.Max(1, imageColumns / 2);
         var autoRegions = _plannedRegions
             .Where(IsRpgAutoRegion)
-            .OrderBy(v => v.Y)
-            .ThenBy(v => v.X)
+            .OrderBy(FoldedSortGroup)
+            .ThenBy(FoldedSortX)
+            .ThenBy(FoldedSortY)
+            .ThenBy(FoldedSortVariant)
             .ToList();
 
         var column = 0;
@@ -489,8 +654,8 @@ public sealed class TilesetPalettePanel : Panel
 
         foreach (var region in autoRegions)
         {
-            var entrySize = FoldedEntrySize(region);
-            if (column + entrySize.Width > _foldedColumns)
+            var displaySize = FoldedEntryDisplaySize(region);
+            if (column + displaySize.Width > _foldedColumns)
             {
                 column = 0;
                 row += rowHeight;
@@ -501,13 +666,13 @@ public sealed class TilesetPalettePanel : Panel
             _foldedEntries.Add(new TilesetPaletteEntry(
                 new Point(region.X, region.Y),
                 preview,
-                entrySize,
+                displaySize,
                 region.Kind,
                 region.Variant,
-                EntryRect(column, row, entrySize.Width, entrySize.Height),
+                EntryRect(column, row, displaySize.Width, displaySize.Height),
                 IsWaterfallRegion(region)));
-            column += entrySize.Width;
-            rowHeight = Math.Max(rowHeight, entrySize.Height);
+            column += displaySize.Width;
+            rowHeight = Math.Max(rowHeight, displaySize.Height);
         }
 
         var normalTop = autoRegions.Count > 0 ? row + rowHeight : 0;
@@ -546,8 +711,22 @@ public sealed class TilesetPalettePanel : Panel
         return new Rectangle(tile.X * _tileSize, (topRows + tile.Y) * _tileSize, _tileSize, _tileSize);
     }
 
-    private static Size FoldedEntrySize(TilesetRegionDefinition region)
+    private Rectangle FoldedCellRangeRect(Point startCell, Point endCell)
     {
+        var left = Math.Min(startCell.X, endCell.X);
+        var top = Math.Min(startCell.Y, endCell.Y);
+        var right = Math.Max(startCell.X, endCell.X) + 1;
+        var bottom = Math.Max(startCell.Y, endCell.Y) + 1;
+        return EntryRect(left, top, right - left, bottom - top);
+    }
+
+    private static Size FoldedEntryDisplaySize(TilesetRegionDefinition region)
+    {
+        if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            return new Size(1, 1);
+        }
+
         return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase)
             ? new Size(2, 2)
             : new Size(1, 1);
@@ -559,11 +738,58 @@ public sealed class TilesetPalettePanel : Panel
             && _plannedRegions.Any(IsRpgAutoRegion);
     }
 
+    private static int FoldedSortGroup(TilesetRegionDefinition region)
+    {
+        if (!string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            return region.Y;
+        }
+
+        return region.Y;
+    }
+
+    private static int FoldedSortX(TilesetRegionDefinition region)
+    {
+        return region.X;
+    }
+
+    private static int FoldedSortY(TilesetRegionDefinition region)
+    {
+        return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : region.Y;
+    }
+
+    private static int FoldedSortVariant(TilesetRegionDefinition region)
+    {
+        return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(region.Variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase)
+            ? 1
+            : 0;
+    }
+
     private static bool IsRpgAutoRegion(TilesetRegionDefinition region)
     {
-        return string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase);
+        return IsRpgAutoRegionKind(region.Kind);
+    }
+
+    private static bool IsRpgAutoRegionKind(string kind)
+    {
+        return string.Equals(kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsA4RegionKind(string kind)
+    {
+        return string.Equals(kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsA4WallEntry(TilesetPaletteEntry entry)
+    {
+        return IsA4RegionKind(entry.Kind)
+            && string.Equals(entry.Variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsWaterfallRegion(TilesetRegionDefinition region)
@@ -581,7 +807,8 @@ public sealed class TilesetPalettePanel : Panel
             x = region.Variant == RpgMakerA1RegionVariants.Waterfall ? region.X : region.X + Math.Min(2, region.Width - 1);
             y = region.Y + Math.Min(1, region.Height - 1);
         }
-        else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase))
+        else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
         {
             x = region.X;
             y = region.Y;
@@ -602,6 +829,28 @@ public sealed class TilesetPalettePanel : Panel
             RpgMakerA1RegionVariants.Waterfall => "E",
             _ => "D"
         };
+    }
+
+    private static string EntryLabel(string kind, string variant)
+    {
+        if (string.Equals(kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase))
+        {
+            return A1EntryLabel(variant);
+        }
+
+        if (string.Equals(kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase))
+        {
+            return "A2";
+        }
+
+        if (string.Equals(kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase))
+        {
+            return "A3";
+        }
+
+        return string.Equals(variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase)
+            ? "A4墙"
+            : "A4顶";
     }
 
     private static List<TilesetRegionDefinition> CloneRegions(IEnumerable<TilesetRegionDefinition>? regions)
@@ -628,6 +877,7 @@ public sealed class TilesetPalettePanel : Panel
             TilesetRegionKinds.RpgMakerA1 => Color.FromArgb(255, 78, 172, 255),
             TilesetRegionKinds.RpgMakerA2 => Color.FromArgb(255, 229, 126, 32),
             TilesetRegionKinds.RpgMakerA3 => Color.FromArgb(255, 186, 104, 200),
+            TilesetRegionKinds.RpgMakerA4 => Color.FromArgb(255, 121, 134, 203),
             TilesetRegionKinds.Ignored => Color.FromArgb(255, 150, 150, 150),
             _ => Color.FromArgb(255, 38, 166, 91)
         };
@@ -649,7 +899,9 @@ public sealed class TilesetPalettePanel : Panel
                 ? "A2"
                 : kind == TilesetRegionKinds.RpgMakerA3
                     ? "A3"
-                    : kind == TilesetRegionKinds.Ignored ? "忽略" : "普通";
+                    : kind == TilesetRegionKinds.RpgMakerA4
+                        ? "A4"
+                        : kind == TilesetRegionKinds.Ignored ? "忽略" : "普通";
         var size = g.MeasureString(text, font);
         var labelRect = new RectangleF(rect.Left + 4, rect.Top + 4, size.Width + 8, size.Height + 4);
         g.FillRectangle(backBrush, labelRect);
@@ -661,12 +913,20 @@ internal sealed record TilesetPaletteEntry(Point Tile, Point PreviewTile, Size S
 
 public sealed class TilesetTileSelectedEventArgs : EventArgs
 {
-    public TilesetTileSelectedEventArgs(int tileX, int tileY, int width = 1, int height = 1)
+    public TilesetTileSelectedEventArgs(
+        int tileX,
+        int tileY,
+        int width = 1,
+        int height = 1,
+        bool preferTilesetBrush = false,
+        IReadOnlyList<TilesetBrushCell>? pattern = null)
     {
         TileX = tileX;
         TileY = tileY;
         Width = Math.Max(1, width);
         Height = Math.Max(1, height);
+        PreferTilesetBrush = preferTilesetBrush;
+        Pattern = pattern;
     }
 
     public int TileX { get; }
@@ -676,4 +936,8 @@ public sealed class TilesetTileSelectedEventArgs : EventArgs
     public int Width { get; }
 
     public int Height { get; }
+
+    public bool PreferTilesetBrush { get; }
+
+    public IReadOnlyList<TilesetBrushCell>? Pattern { get; }
 }

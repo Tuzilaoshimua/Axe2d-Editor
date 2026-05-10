@@ -5,6 +5,7 @@ namespace Axe2DEditor.Core.Maps;
 public static class RpgMakerAutoTile
 {
     public const int A3StandaloneShape = 15;
+    public const int A4WallInteriorShape = 0;
 
     private static readonly int[] A1WaterSurfaceSequence = [0, 1, 2, 1];
     private static readonly Point[][] WallAutoTileTable =
@@ -52,6 +53,21 @@ public static class RpgMakerAutoTile
             && terrain.TileY >= 0;
     }
 
+    public static bool IsA4(MapTerrainDefinition? terrain)
+    {
+        return terrain is not null
+            && terrain.Rule.Equals(MapDefaults.RuleRpgMakerA4, StringComparison.OrdinalIgnoreCase)
+            && terrain.TileX >= 0
+            && terrain.TileY >= 0;
+    }
+
+    public static bool IsA4Wall(MapTerrainDefinition? terrain)
+    {
+        return IsA4(terrain)
+            && terrain is not null
+            && IsA4WallTerrain(terrain);
+    }
+
     public static Point SnapA2Origin(int tileX, int tileY)
     {
         return new Point(Math.Max(0, tileX / 2 * 2), Math.Max(0, tileY / 3 * 3));
@@ -60,6 +76,21 @@ public static class RpgMakerAutoTile
     public static Point SnapA3Origin(int tileX, int tileY)
     {
         return new Point(Math.Max(0, tileX / 2 * 2), Math.Max(0, tileY / 2 * 2));
+    }
+
+    public static Point SnapA4Origin(int tileX, int tileY)
+    {
+        var x = Math.Max(0, tileX / 2 * 2);
+        var y = Math.Max(0, tileY) switch
+        {
+            < 3 => 0,
+            < 5 => 3,
+            < 8 => 5,
+            < 10 => 8,
+            < 13 => 10,
+            _ => 13
+        };
+        return new Point(x, y);
     }
 
     public static Point SnapA1Origin(int tileX, int tileY)
@@ -288,6 +319,27 @@ public static class RpgMakerAutoTile
             && DrawWallAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, terrain.TileX, terrain.TileY, fixedShape);
     }
 
+    public static bool DrawA4(
+        Graphics graphics,
+        Image? tilesetImage,
+        int tileSize,
+        RectangleF destination,
+        MapTileCell cell,
+        MapTerrainDefinition terrain,
+        Dictionary<(int X, int Y), MapTileCell> lookup,
+        float opacity)
+    {
+        if (!IsA4(terrain))
+        {
+            return false;
+        }
+
+        var fixedShape = TryParseA4FixedShapeTag(cell.Tag, out var shape) ? shape : (int?)null;
+        return IsA4WallTerrain(terrain)
+            ? DrawWallAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, terrain.TileX, terrain.TileY, fixedShape)
+            : DrawAutoTileBlock(graphics, tilesetImage, tileSize, destination, cell, terrain, lookup, opacity, terrain.TileX, terrain.TileY);
+    }
+
     public static string A3FixedShapeTag(int shape)
     {
         return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"a3Shape:{Math.Clamp(shape, 0, WallAutoTileTable.Length - 1)}");
@@ -296,6 +348,25 @@ public static class RpgMakerAutoTile
     public static bool TryParseA3FixedShapeTag(string? tag, out int shape)
     {
         const string prefix = "a3Shape:";
+        shape = 0;
+        if (string.IsNullOrWhiteSpace(tag) || !tag.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return int.TryParse(tag[prefix.Length..], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out shape)
+            && shape >= 0
+            && shape < WallAutoTileTable.Length;
+    }
+
+    public static string A4FixedShapeTag(int shape)
+    {
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"a4Shape:{Math.Clamp(shape, 0, WallAutoTileTable.Length - 1)}");
+    }
+
+    public static bool TryParseA4FixedShapeTag(string? tag, out int shape)
+    {
+        const string prefix = "a4Shape:";
         shape = 0;
         if (string.IsNullOrWhiteSpace(tag) || !tag.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
         {
@@ -372,6 +443,44 @@ public static class RpgMakerAutoTile
         }
 
         return true;
+    }
+
+    private static Point A4Block(int kind)
+    {
+        var tx = kind % 8;
+        var ty = kind / 8;
+        var y = (int)MathF.Floor(ty * 2.5f + (ty % 2 == 1 ? 0.5f : 0f));
+        return new Point(tx * 2, y);
+    }
+
+    private static int A4Kind(int tileX, int tileY)
+    {
+        for (var kind = 0; kind < 48; kind++)
+        {
+            var block = A4Block(kind);
+            if (block.X == tileX && block.Y == tileY)
+            {
+                return kind;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool IsA4WallKind(int kind)
+    {
+        return kind % 16 is >= 8;
+    }
+
+    private static bool IsA4WallTerrain(MapTerrainDefinition terrain)
+    {
+        if (terrain.Id.Contains(".wall.", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var kind = A4Kind(terrain.TileX, terrain.TileY);
+        return kind >= 0 && IsA4WallKind(kind);
     }
 
     private static bool DrawWallAutoTileBlock(

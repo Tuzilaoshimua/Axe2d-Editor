@@ -615,7 +615,7 @@ public sealed class MapEditorForm : Form
         panel.Controls.Add(tilesetHeader, 0, 0);
 
         _tilesetPalette.Dock = DockStyle.Fill;
-        _tilesetPalette.TileSelected += (_, e) => SelectTilesetTile(e.TileX, e.TileY, e.Width, e.Height, useAsBrush: true);
+        _tilesetPalette.TileSelected += (_, e) => SelectTilesetTile(e.TileX, e.TileY, e.Width, e.Height, useAsBrush: true, preferTilesetBrush: e.PreferTilesetBrush, pattern: e.Pattern);
         panel.Controls.Add(_tilesetPalette, 0, 1);
         return panel;
     }
@@ -1299,6 +1299,12 @@ public sealed class MapEditorForm : Form
             origin = RpgMakerAutoTile.SnapA3Origin(_selectedTilesetTile.X, _selectedTilesetTile.Y);
             _selectedTerrain.Rule = MapDefaults.RuleRpgMakerA3;
         }
+        else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            var localOrigin = RpgMakerAutoTile.SnapA4Origin(_selectedTilesetTile.X - region.X, _selectedTilesetTile.Y - region.Y);
+            origin = new Point(region.X + localOrigin.X, region.Y + localOrigin.Y);
+            _selectedTerrain.Rule = MapDefaults.RuleRpgMakerA4;
+        }
         else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase))
         {
             origin = RpgMakerAutoTile.SnapA2Origin(_selectedTilesetTile.X, _selectedTilesetTile.Y);
@@ -1306,7 +1312,7 @@ public sealed class MapEditorForm : Form
         }
         else
         {
-            MessageBox.Show(this, "当前绑定按钮仅支持 RPG Maker A2/A3 自动元件。", "绑定自动元件", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "当前绑定按钮仅支持 RPG Maker A2/A3/A4 自动元件。", "绑定自动元件", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1321,7 +1327,14 @@ public sealed class MapEditorForm : Form
         SaveProject();
     }
 
-    private void SelectTilesetTile(int tileX, int tileY, int width, int height, bool useAsBrush)
+    private void SelectTilesetTile(
+        int tileX,
+        int tileY,
+        int width,
+        int height,
+        bool useAsBrush,
+        bool preferTilesetBrush = false,
+        IReadOnlyList<TilesetBrushCell>? pattern = null)
     {
         _selectedTilesetTile = new Point(tileX, tileY);
         _tilesetPalette.SelectedTile = _selectedTilesetTile;
@@ -1329,7 +1342,16 @@ public sealed class MapEditorForm : Form
         var isA1OverlayAnimated = IsA1AnimatedOverlayTile(tileX, tileY);
         if (useAsBrush)
         {
-            if (TrySelectPlannedAutoTerrain(tileX, tileY))
+            if (pattern is { Count: > 0 } && TryCreateTerrainPattern(pattern, out var terrainPattern))
+            {
+                SelectTerrain(terrainPattern[0].TerrainId);
+                _shiftTerrain = _selectedTerrain;
+                _canvas.SetShiftTerrain(_shiftTerrain);
+                _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
+                _canvas.SetTerrainPatternSelection(terrainPattern);
+                _canvas.UseTerrainBrush();
+            }
+            else if (!preferTilesetBrush && TrySelectPlannedAutoTerrain(tileX, tileY))
             {
                 _shiftTerrain = _selectedTerrain;
                 _canvas.SetShiftTerrain(_shiftTerrain);
@@ -1340,7 +1362,15 @@ public sealed class MapEditorForm : Form
             {
                 _shiftTerrain = null;
                 _canvas.SetShiftTerrain(_shiftTerrain);
-                _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
+                if (pattern is { Count: > 0 })
+                {
+                    _canvas.SetTilesetPatternSelection(pattern, isA1OverlayTile, isA1OverlayAnimated);
+                }
+                else
+                {
+                    _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
+                }
+
                 _canvas.UseTilesetBrush();
             }
         }
@@ -1352,6 +1382,30 @@ public sealed class MapEditorForm : Form
         UpdateTilesetInfo();
         UpdateA2Highlight();
         UpdateBrushButtons();
+    }
+
+    private bool TryCreateTerrainPattern(IReadOnlyList<TilesetBrushCell> pattern, out List<TerrainBrushCell> terrainPattern)
+    {
+        terrainPattern = [];
+        foreach (var cell in pattern)
+        {
+            if (IsA1OverlayTile(cell.TileX, cell.TileY))
+            {
+                terrainPattern.Clear();
+                return false;
+            }
+
+            var terrain = FindPlannedAutoTerrain(cell.TileX, cell.TileY);
+            if (terrain is null)
+            {
+                terrainPattern.Clear();
+                return false;
+            }
+
+            terrainPattern.Add(new TerrainBrushCell(cell.OffsetX, cell.OffsetY, terrain.Id));
+        }
+
+        return terrainPattern.Count > 0;
     }
 
     private bool IsA1OverlayTile(int tileX, int tileY)
@@ -1414,6 +1468,12 @@ public sealed class MapEditorForm : Form
             var blockX = region.X + (tileX - region.X) / 2 * 2;
             var blockY = region.Y + (tileY - region.Y) / 2 * 2;
             terrainId = CreateA3TerrainId(blockX, blockY);
+        }
+        else if (string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            var localOrigin = RpgMakerAutoTile.SnapA4Origin(tileX - region.X, tileY - region.Y);
+            var origin = new Point(region.X + localOrigin.X, region.Y + localOrigin.Y);
+            terrainId = CreateA4TerrainId(origin.X, origin.Y, FindA4RegionForOrigin(_selectedMap.TilesetPlan, origin));
         }
         else
         {
@@ -2160,6 +2220,7 @@ public sealed class MapEditorForm : Form
         }
 
         var hasOnlyGeneratedA2Regions = HasOnlyGeneratedA2Regions(map.TilesetPlan);
+        var planKind = map.TilesetPlan.RpgMakerKind;
         map.TilesetPlan.TileSize = newTileSize;
         if (!hasOnlyGeneratedA2Regions)
         {
@@ -2174,7 +2235,9 @@ public sealed class MapEditorForm : Form
             return;
         }
 
-        map.TilesetPlan.Regions = CreateStandardA2Regions(columns, rows);
+        map.TilesetPlan.Regions = string.Equals(planKind, RpgMakerTilesetKinds.A4, StringComparison.OrdinalIgnoreCase)
+            ? CreateStandardA4Regions(columns, rows)
+            : CreateStandardA2Regions(columns, rows);
     }
 
     private static void ScaleTilesetRegions(TilesetPlanDefinition plan, int oldTileSize, int newTileSize)
@@ -2195,12 +2258,17 @@ public sealed class MapEditorForm : Form
     private static bool HasOnlyGeneratedA2Regions(TilesetPlanDefinition plan)
     {
         return plan.Regions.Count > 0
-            && plan.Regions.All(region =>
+            && (plan.Regions.All(region =>
                 string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase)
                 && region.Width == 2
                 && region.Height == 3
                 && region.X % 2 == 0
-                && region.Y % 3 == 0);
+                && region.Y % 3 == 0)
+                || plan.Regions.All(region =>
+                    string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase)
+                    && region.Width == 2
+                    && region.Height == (IsOfficialA4WallRow(region.Y) ? 2 : 3)
+                    && region.X % 2 == 0));
     }
 
     private static List<TilesetRegionDefinition> CreateStandardA2Regions(int columns, int rows)
@@ -2338,6 +2406,8 @@ public sealed class MapEditorForm : Form
                 ? $" | {_selectedTerrain.DisplayName} A2 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
                 : _selectedTerrain is not null && RpgMakerAutoTile.IsA3(_selectedTerrain)
                     ? $" | {_selectedTerrain.DisplayName} A3 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
+                    : _selectedTerrain is not null && RpgMakerAutoTile.IsA4(_selectedTerrain)
+                        ? $" | {_selectedTerrain.DisplayName} A4 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
                     : "";
         var regionCount = _selectedMap.TilesetPlan?.Regions?.Count ?? 0;
         var planText = regionCount > 0 ? $" | 区域 {regionCount}" : "";
@@ -2353,6 +2423,9 @@ public sealed class MapEditorForm : Form
             .Distinct()
             .ToList();
         var a3Origins = EnumerateA3Origins(map.TilesetPlan)
+            .Distinct()
+            .ToList();
+        var a4Origins = EnumerateA4Origins(map.TilesetPlan)
             .Distinct()
             .ToList();
         foreach (var origin in a1Origins)
@@ -2373,12 +2446,18 @@ public sealed class MapEditorForm : Form
             })
             .Concat(a2Origins.Select(v => CreateA2TerrainId(v.X, v.Y)))
             .Concat(a3Origins.Select(v => CreateA3TerrainId(v.X, v.Y)))
+            .Concat(a4Origins.Select(v =>
+            {
+                var sourceRegion = FindA4RegionForOrigin(map.TilesetPlan, v);
+                return CreateA4TerrainId(v.X, v.Y, sourceRegion);
+            }))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var terrain in map.Terrains.Where(v =>
             v.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase)
             || v.Rule.Equals(MapDefaults.RuleRpgMakerA2, StringComparison.OrdinalIgnoreCase)
-            || v.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase)).ToList())
+            || v.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase)
+            || v.Rule.Equals(MapDefaults.RuleRpgMakerA4, StringComparison.OrdinalIgnoreCase)).ToList())
         {
             if (!expectedIds.Contains(terrain.Id) && IsGeneratedTilesetTerrain(terrain.Id))
             {
@@ -2469,6 +2548,72 @@ public sealed class MapEditorForm : Form
             terrain.TileX = origin.X;
             terrain.TileY = origin.Y;
         }
+
+        foreach (var origin in a4Origins)
+        {
+            var sourceRegion = FindA4RegionForOrigin(map.TilesetPlan, origin);
+            var id = CreateA4TerrainId(origin.X, origin.Y, sourceRegion);
+            var terrain = map.Terrains.FirstOrDefault(v => string.Equals(v.Id, id, StringComparison.OrdinalIgnoreCase));
+            if (terrain is null)
+            {
+                terrain = new MapTerrainDefinition
+                {
+                    Id = id,
+                    DisplayName = A4TerrainDisplayName(sourceRegion, origin),
+                    ColorHex = "#6366f1",
+                    EdgeColorHex = "#3730a3"
+                };
+                map.Terrains.Add(terrain);
+            }
+            else
+            {
+                terrain.DisplayName = A4TerrainDisplayName(sourceRegion, origin);
+            }
+
+            terrain.Rule = MapDefaults.RuleRpgMakerA4;
+            terrain.Animated = false;
+            terrain.AnimationFrames = 1;
+            terrain.AnimationFps = 4;
+            terrain.TileX = origin.X;
+            terrain.TileY = origin.Y;
+        }
+    }
+
+    private static List<TilesetRegionDefinition> CreateStandardA4Regions(int columns, int rows)
+    {
+        var regions = new List<TilesetRegionDefinition>();
+        int[] originRows = [0, 3, 5, 8, 10, 13];
+        foreach (var y in originRows)
+        {
+            var isWall = IsOfficialA4WallRow(y);
+            var height = isWall ? 2 : 3;
+            if (y + height > Math.Min(rows, 15))
+            {
+                continue;
+            }
+
+            for (var x = 0; x + 2 <= Math.Min(columns, 16); x += 2)
+            {
+                regions.Add(new TilesetRegionDefinition
+                {
+                    Id = $"tileset.region.a4.{x}.{y}.{Guid.NewGuid():N}",
+                    Name = isWall ? $"RM A4 墙面 {x},{y}" : $"RM A4 屋顶 {x},{y}",
+                    Kind = TilesetRegionKinds.RpgMakerA4,
+                    Variant = isWall ? RpgMakerA4RegionVariants.Wall : RpgMakerA4RegionVariants.Roof,
+                    X = x,
+                    Y = y,
+                    Width = 2,
+                    Height = height
+                });
+            }
+        }
+
+        return regions;
+    }
+
+    private static bool IsOfficialA4WallRow(int y)
+    {
+        return y is 3 or 8 or 13;
     }
 
     private static IEnumerable<Point> EnumerateA1Origins(TilesetPlanDefinition plan)
@@ -2564,11 +2709,50 @@ public sealed class MapEditorForm : Form
         }
     }
 
+    private static IEnumerable<Point> EnumerateA4Origins(TilesetPlanDefinition plan)
+    {
+        foreach (var region in plan.Regions.Where(v => string.Equals(v.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase)))
+        {
+            var blockColumns = Math.Max(1, region.Width / 2);
+            var blockHeight = string.Equals(region.Variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase) ? 2 : 3;
+            var blockRows = Math.Max(1, region.Height / blockHeight);
+            for (var row = 0; row < blockRows; row++)
+            {
+                for (var column = 0; column < blockColumns; column++)
+                {
+                    var tileX = column * 2;
+                    var tileY = row * blockHeight;
+                    var localOrigin = RpgMakerAutoTile.SnapA4Origin(tileX, tileY);
+                    yield return new Point(region.X + localOrigin.X, region.Y + localOrigin.Y);
+                }
+            }
+        }
+    }
+
+    private static TilesetRegionDefinition? FindA4RegionForOrigin(TilesetPlanDefinition plan, Point origin)
+    {
+        return plan.Regions.FirstOrDefault(region =>
+            string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase)
+            && origin.X >= region.X
+            && origin.Y >= region.Y
+            && origin.X < region.X + region.Width
+            && origin.Y < region.Y + region.Height);
+    }
+
+    private static string A4TerrainDisplayName(TilesetRegionDefinition? region, Point origin)
+    {
+        var label = string.Equals(region?.Variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase)
+            ? "墙面"
+            : "屋顶";
+        return $"A4{label} {origin.X},{origin.Y}";
+    }
+
     private static bool IsGeneratedTilesetTerrain(string id)
     {
         return id.StartsWith("terrain.tileset.a1.", StringComparison.OrdinalIgnoreCase)
             || id.StartsWith("terrain.tileset.a2.", StringComparison.OrdinalIgnoreCase)
-            || id.StartsWith("terrain.tileset.a3.", StringComparison.OrdinalIgnoreCase);
+            || id.StartsWith("terrain.tileset.a3.", StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("terrain.tileset.a4.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateA1TerrainId(int x, int y, TilesetRegionDefinition? region)
@@ -2619,6 +2803,14 @@ public sealed class MapEditorForm : Form
         return $"terrain.tileset.a3.{x}.{y}";
     }
 
+    private static string CreateA4TerrainId(int x, int y, TilesetRegionDefinition? region)
+    {
+        var kind = string.Equals(region?.Variant, RpgMakerA4RegionVariants.Wall, StringComparison.OrdinalIgnoreCase)
+            ? "wall"
+            : "roof";
+        return $"terrain.tileset.a4.{kind}.{x}.{y}";
+    }
+
     private void UpdateA2Highlight()
     {
         if (!_shiftAutoTerrainMode)
@@ -2643,6 +2835,13 @@ public sealed class MapEditorForm : Form
         }
 
         if (_selectedTerrain is not null && RpgMakerAutoTile.IsA3(_selectedTerrain))
+        {
+            _tilesetPalette.HighlightBlockOrigin = new Point(_selectedTerrain.TileX, _selectedTerrain.TileY);
+            _tilesetPalette.HighlightBlockSize = new Size(2, 2);
+            return;
+        }
+
+        if (_selectedTerrain is not null && RpgMakerAutoTile.IsA4(_selectedTerrain))
         {
             _tilesetPalette.HighlightBlockOrigin = new Point(_selectedTerrain.TileX, _selectedTerrain.TileY);
             _tilesetPalette.HighlightBlockSize = new Size(2, 2);
@@ -2680,6 +2879,11 @@ public sealed class MapEditorForm : Form
         if (terrain.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase))
         {
             return $"{terrain.DisplayName}\r\nA3外墙";
+        }
+
+        if (terrain.Rule.Equals(MapDefaults.RuleRpgMakerA4, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{terrain.DisplayName}\r\nA4墙屋";
         }
 
         if (terrain.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase))
