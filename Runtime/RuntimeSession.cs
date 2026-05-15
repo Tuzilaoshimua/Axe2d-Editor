@@ -13,6 +13,11 @@ internal sealed class RuntimeSession
     {
         _context = context;
         ActiveMap = _context.Project.AssetLibrary.Maps.FirstOrDefault();
+        if (ActiveMap is not null)
+        {
+            MapDefaults.Normalize(ActiveMap);
+        }
+
         var playerNode = FindFirstPlayableNode(_context.Project.HierarchyTree);
         Player = CreatePlayerState(playerNode);
         SceneObjects = FlattenSceneObjects(_context.Project.HierarchyTree)
@@ -63,6 +68,8 @@ internal sealed class RuntimeSession
     public string LastDialogueMessage { get; private set; } = "暂无对话。";
 
     public string LastRewardMessage { get; private set; } = "暂无奖励。";
+
+    public string LastMovementBlockReason { get; private set; } = "未发生阻挡。";
 
     public PointF CameraFocus { get; private set; }
 
@@ -196,6 +203,64 @@ internal sealed class RuntimeSession
         Player.X = Math.Clamp(Player.X, 0, Math.Max(0, worldBounds.Width - 1));
         Player.Y = Math.Clamp(Player.Y, 0, Math.Max(0, worldBounds.Height - 1));
         UpdateCamera();
+    }
+
+    public bool TryMovePlayer(float dx, float dy)
+    {
+        var moved = false;
+        var blocked = false;
+
+        if (Math.Abs(dx) > 0.0001f)
+        {
+            var nextX = Player.X + dx;
+            if (CanPlacePlayerAt(nextX, Player.Y, out var reason))
+            {
+                Player.X = nextX;
+                moved = true;
+            }
+            else
+            {
+                blocked = true;
+                LastMovementBlockReason = reason;
+            }
+        }
+
+        if (Math.Abs(dy) > 0.0001f)
+        {
+            var nextY = Player.Y + dy;
+            if (CanPlacePlayerAt(Player.X, nextY, out var reason))
+            {
+                Player.Y = nextY;
+                moved = true;
+            }
+            else
+            {
+                blocked = true;
+                LastMovementBlockReason = reason;
+            }
+        }
+
+        if (moved)
+        {
+            ClampPlayerToBounds();
+            LastMovementBlockReason = blocked ? LastMovementBlockReason : "未发生阻挡。";
+        }
+
+        return moved;
+    }
+
+    public RuntimeTileInfo GetTileInfoAtPlayer()
+    {
+        return GetTileInfoAt(Player.X, Player.Y);
+    }
+
+    public RuntimeTileInfo GetTileInfoAt(float worldX, float worldY)
+    {
+        var tileX = (int)MathF.Floor(worldX);
+        var tileY = (int)MathF.Floor(worldY);
+        var metadata = ResolveTopTileMetadata(tileX, tileY);
+        var rule = TilesetTileRuleResolver.Resolve(metadata, _context.Project.AssetLibrary.TerrainRules);
+        return new RuntimeTileInfo(tileX, tileY, rule.Metadata, rule.TerrainRule?.DisplayName ?? rule.TerrainRule?.Id ?? string.Empty, rule.MoveCost, rule.HasTileMoveCostOverride);
     }
 
     private static RuntimePlayerState CreatePlayerState(ProjectTreeNode? playerNode)
@@ -416,6 +481,7 @@ internal sealed class RuntimeSession
         }
 
         ActiveMap = targetMap;
+        MapDefaults.Normalize(ActiveMap);
         ClampPlayerToBounds();
         return $"已切换地图：{targetMap.DisplayName}";
     }
@@ -475,6 +541,197 @@ internal sealed class RuntimeSession
         return Math.Abs(Player.X - centerX) <= halfWidth && Math.Abs(Player.Y - centerY) <= halfHeight;
     }
 
+    private bool CanPlacePlayerAt(float worldX, float worldY, out string reason)
+    {
+        reason = string.Empty;
+        var bounds = GetWorldBounds();
+        if (worldX < 0 || worldY < 0 || worldX > bounds.Width - 1 || worldY > bounds.Height - 1)
+        {
+            reason = "地图边界";
+            return false;
+        }
+
+        if (ActiveMap is null)
+        {
+            return true;
+        }
+
+        var tileX = (int)MathF.Floor(worldX);
+        var tileY = (int)MathF.Floor(worldY);
+        var localPoint = new PointF(worldX - tileX, worldY - tileY);
+        var terrainLookup = ActiveMap.Terrains.ToDictionary(terrain => terrain.Id, StringComparer.OrdinalIgnoreCase);
+        foreach (var layer in ActiveMap.Layers.Where(layer => layer.Visible && layer.Kind.Equals("Collision", StringComparison.OrdinalIgnoreCase)))
+        {
+            var collisionCell = layer.Tiles.FirstOrDefault(tile => tile.X == tileX && tile.Y == tileY);
+            if (collisionCell is null || !collisionCell.Solid)
+            {
+                continue;
+            }
+
+            if (string.Equals(collisionCell.Tag, "tileMetadataCollision", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(collisionCell.TerrainId, "tileMetadataCollision", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            reason = $"碰撞层: {layer.Name}";
+            return false;
+        }
+
+        foreach (var layer in ActiveMap.Layers.Where(layer => layer.Visible && layer.Kind.Equals("Tile", StringComparison.OrdinalIgnoreCase)).Reverse())
+        {
+            var cell = layer.Tiles.FirstOrDefault(tile => tile.X == tileX && tile.Y == tileY);
+            if (cell is null)
+            {
+                continue;
+            }
+
+            if (!TryResolveMapTileSource(cell, terrainLookup, out var sourceTileX, out var sourceTileY)
+                || !TilesetTileMetadataResolver.TryFind(ActiveMap.TilesetPlan, sourceTileX, sourceTileY, out var metadata))
+            {
+                continue;
+            }
+
+            var resolvedRule = TilesetTileRuleResolver.Resolve(metadata, _context.Project.AssetLibrary.TerrainRules);
+            if (!resolvedRule.Walkable)
+            {
+                reason = resolvedRule.TerrainRule?.BlocksMovement == true
+                    ? $"地形规则阻挡: {resolvedRule.TerrainRule.DisplayName} ({resolvedRule.TerrainRule.TerrainTag})"
+                    : $"Walkable=false: {TileLabel(metadata, sourceTileX, sourceTileY)}";
+                return false;
+            }
+
+            foreach (var shape in metadata.CollisionShapes)
+            {
+                if (ShapeContains(shape, localPoint))
+                {
+                    reason = $"瓦片碰撞: {TileLabel(metadata, sourceTileX, sourceTileY)}";
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private TilesetTileMetadataDefinition? ResolveTopTileMetadata(int mapX, int mapY)
+    {
+        if (ActiveMap is null)
+        {
+            return null;
+        }
+
+        var terrainLookup = ActiveMap.Terrains.ToDictionary(terrain => terrain.Id, StringComparer.OrdinalIgnoreCase);
+        foreach (var layer in ActiveMap.Layers.Where(layer => layer.Visible && layer.Kind.Equals("Tile", StringComparison.OrdinalIgnoreCase)).Reverse())
+        {
+            var cell = layer.Tiles.FirstOrDefault(tile => tile.X == mapX && tile.Y == mapY);
+            if (cell is null || !TryResolveMapTileSource(cell, terrainLookup, out var tileX, out var tileY))
+            {
+                continue;
+            }
+
+            var metadata = TilesetTileMetadataResolver.Find(ActiveMap.TilesetPlan, tileX, tileY);
+            if (metadata is not null)
+            {
+                return metadata;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryResolveMapTileSource(
+        MapTileCell cell,
+        IReadOnlyDictionary<string, MapTerrainDefinition> terrains,
+        out int tileX,
+        out int tileY)
+    {
+        tileX = cell.TileX;
+        tileY = cell.TileY;
+        if (tileX >= 0 && tileY >= 0)
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(cell.TerrainId)
+            && terrains.TryGetValue(cell.TerrainId, out var terrain)
+            && terrain.TileX >= 0
+            && terrain.TileY >= 0)
+        {
+            tileX = terrain.TileX;
+            tileY = terrain.TileY;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ShapeContains(TileCollisionShapeDefinition shape, PointF point)
+    {
+        if (string.Equals(shape.ShapeType, TileCollisionShapeTypes.Polygon, StringComparison.OrdinalIgnoreCase))
+        {
+            return PolygonContains(shape.Points, point);
+        }
+
+        var rect = new RectangleF(shape.X, shape.Y, Math.Max(0.01f, shape.Width), Math.Max(0.01f, shape.Height));
+        if (!rect.Contains(point))
+        {
+            return false;
+        }
+
+        if (!string.Equals(shape.ShapeType, TileCollisionShapeTypes.Ellipse, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var radiusX = rect.Width / 2f;
+        var radiusY = rect.Height / 2f;
+        if (radiusX <= 0f || radiusY <= 0f)
+        {
+            return false;
+        }
+
+        var centerX = rect.Left + radiusX;
+        var centerY = rect.Top + radiusY;
+        var normalizedX = (point.X - centerX) / radiusX;
+        var normalizedY = (point.Y - centerY) / radiusY;
+        return normalizedX * normalizedX + normalizedY * normalizedY <= 1f;
+    }
+
+    private static bool PolygonContains(IReadOnlyList<TileCollisionPointDefinition> polygon, PointF point)
+    {
+        if (polygon.Count < 3)
+        {
+            return false;
+        }
+
+        var inside = false;
+        for (int index = 0, previous = polygon.Count - 1; index < polygon.Count; previous = index++)
+        {
+            var currentPoint = polygon[index];
+            var previousPoint = polygon[previous];
+            if ((currentPoint.Y > point.Y) == (previousPoint.Y > point.Y))
+            {
+                continue;
+            }
+
+            var intersectionX = (previousPoint.X - currentPoint.X) * (point.Y - currentPoint.Y) / (previousPoint.Y - currentPoint.Y) + currentPoint.X;
+            if (point.X < intersectionX)
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside;
+    }
+
+    private static string TileLabel(TilesetTileMetadataDefinition metadata, int tileX, int tileY)
+    {
+        return string.IsNullOrWhiteSpace(metadata.DisplayName)
+            ? $"{tileX},{tileY}"
+            : $"{metadata.DisplayName} ({tileX},{tileY})";
+    }
+
     private static float ParseFloat(IReadOnlyDictionary<string, string> parameters, string key, float fallback)
     {
         return parameters.TryGetValue(key, out var value) && float.TryParse(value, out var parsed)
@@ -505,6 +762,8 @@ internal sealed class RuntimePlayerState
 
     public float Y { get; set; }
 }
+
+internal sealed record RuntimeTileInfo(int X, int Y, TilesetTileMetadataDefinition? Metadata, string TerrainRuleName, double MoveCost, bool HasTileMoveCostOverride);
 
 internal sealed class RuntimeTriggerState
 {

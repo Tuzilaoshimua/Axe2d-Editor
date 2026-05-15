@@ -235,6 +235,9 @@ public sealed class RuntimePreviewForm : Form
             _detailList.Items.Add($"当前地图: {_session.ActiveMap.DisplayName} ({_session.ActiveMap.Id})");
             _detailList.Items.Add($"  尺寸: {_session.ActiveMap.Width} x {_session.ActiveMap.Height}");
             _detailList.Items.Add($"  图块集: {_session.ActiveMap.Tileset}");
+            var metadataCount = _session.ActiveMap.TilesetPlan?.Tiles?.Count ?? 0;
+            var collisionMetadataCount = _session.ActiveMap.TilesetPlan?.Tiles?.Count(tile => tile.CollisionShapes.Count > 0) ?? 0;
+            _detailList.Items.Add($"  瓦片属性: {metadataCount} 个, 碰撞属性 {collisionMetadataCount} 个");
             _detailList.Items.Add("  状态: 可测试");
         }
 
@@ -257,7 +260,12 @@ public sealed class RuntimePreviewForm : Form
     {
         var elapsed = DateTime.Now - _startedAt;
         var mapName = _session.ActiveMap?.DisplayName ?? "无地图";
-        _statusLabel.Text = $"模式: {_mode} | 地图: {mapName} | 已运行 {elapsed:mm\\:ss} | 角色: {_session.Player.X:0.0},{_session.Player.Y:0.0} | 相机: {_session.CameraFocus.X:0.0},{_session.CameraFocus.Y:0.0}";
+        var tileInfo = _session.GetTileInfoAtPlayer();
+        var tileName = tileInfo.Metadata is null
+            ? "无属性"
+            : string.IsNullOrWhiteSpace(tileInfo.Metadata.DisplayName) ? $"{tileInfo.X},{tileInfo.Y}" : tileInfo.Metadata.DisplayName;
+        var moveCostSource = tileInfo.HasTileMoveCostOverride ? "瓦片" : "规则/默认";
+        _statusLabel.Text = $"模式: {_mode} | 地图: {mapName} | 已运行 {elapsed:mm\\:ss} | 角色: {_session.Player.X:0.0},{_session.Player.Y:0.0} | Tile: {tileInfo.X},{tileInfo.Y} {tileName} MoveCost={tileInfo.MoveCost:0.##}({moveCostSource}) | 阻挡: {_session.LastMovementBlockReason}";
     }
 
     private void Viewport_Paint(object? sender, PaintEventArgs e)

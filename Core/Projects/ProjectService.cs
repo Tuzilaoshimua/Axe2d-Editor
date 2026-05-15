@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Axe2DEditor.Core.Assets;
 using Axe2DEditor.Core.Behaviors;
 using Axe2DEditor.Core.Enemies;
@@ -20,7 +21,8 @@ public sealed class ProjectService
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     public ProjectContext CreateProject(string rootDirectory, string projectName)

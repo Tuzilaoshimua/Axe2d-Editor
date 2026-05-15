@@ -39,6 +39,8 @@ public sealed class MapEditorForm : Form
     private readonly ToolStripButton _gridButton = new();
     private readonly ToolStripButton _autoEdgeButton = new();
     private readonly ToolStripButton _animationButton = new();
+    private readonly ToolStripButton _tileCollisionButton = new();
+    private readonly ToolStripButton _generateCollisionButton = new();
     private readonly ToolStripButton _resetViewButton = new();
     private readonly ToolStripButton _saveButton = new();
     private readonly ToolStripButton _importTilesetButton = new();
@@ -70,6 +72,8 @@ public sealed class MapEditorForm : Form
     private readonly Button _moveLayerDownButton = new();
     private readonly Button _useTerrainBrushButton = new();
     private readonly Button _useTilesetBrushButton = new();
+    private readonly Button _editTileMetadataButton = new();
+    private readonly Button _terrainFillModeButton = new();
     private readonly Button _bindA2PaletteButton = new();
     private readonly CheckBox _layerVisibleBox = new();
     private readonly CheckBox _layerLockedBox = new();
@@ -91,6 +95,8 @@ public sealed class MapEditorForm : Form
     private Point _selectedTilesetTile = new(-1, -1);
     private bool _shiftAutoTerrainMode;
     private bool _altEyedropperMode;
+    private bool _terrainFillModeEnabled;
+    private bool _selectedAdvancedPattern;
     private bool _isRestoringHistory;
     private bool _isMapEditing;
     private bool _suppressShiftWhileBrushMenuOpen;
@@ -100,6 +106,11 @@ public sealed class MapEditorForm : Form
         MapDefinition Map,
         MapLayerDefinition? SelectedLayer,
         string? SelectedLayerId);
+
+    private sealed record ViewTypeChoice(string Value, string Display)
+    {
+        public override string ToString() => Display;
+    }
 
     public MapEditorForm(
         ProjectContext context,
@@ -360,6 +371,21 @@ public sealed class MapEditorForm : Form
         _autoEdgeButton.Checked = true;
         _autoEdgeButton.Click += (_, _) => _canvas.ShowAutoEdges = _autoEdgeButton.Checked;
 
+        _tileCollisionButton.Text = "碰撞";
+        _tileCollisionButton.ToolTipText = "显示瓦片属性中的碰撞形状";
+        _tileCollisionButton.CheckOnClick = true;
+        _tileCollisionButton.Checked = false;
+        _tileCollisionButton.Click += (_, _) =>
+        {
+            _canvas.ShowTileCollisionShapes = _tileCollisionButton.Checked;
+            UpdateStatusText();
+        };
+
+        _generateCollisionButton.Text = "生成碰撞";
+        _generateCollisionButton.ToolTipText = "根据瓦片属性中的碰撞形状生成碰撞层";
+        _generateCollisionButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+        _generateCollisionButton.Click += (_, _) => GenerateCollisionLayerFromTileMetadata();
+
         _animationButton.CheckOnClick = true;
         _animationButton.Checked = true;
         _animationButton.ToolTipText = T("mapEditor.animation.tooltip", "动态瓦片预览");
@@ -403,6 +429,8 @@ public sealed class MapEditorForm : Form
             new ToolStripSeparator(),
             _gridButton,
             _autoEdgeButton,
+            _tileCollisionButton,
+            _generateCollisionButton,
             _animationButton,
             _resetViewButton,
             _saveButton
@@ -563,7 +591,7 @@ public sealed class MapEditorForm : Form
         _canvas.TileHovered += (_, e) =>
         {
             _statusLabel.Text = e.Inside
-                ? $"x {e.X}, y {e.Y} | {_selectedLayer?.Name ?? "-"} | {_selectedTerrain?.DisplayName ?? _selectedTerrain?.Id ?? "-"}{ShiftStatusSuffix()}"
+                ? $"x {e.X}, y {e.Y} | {_selectedLayer?.Name ?? "-"} | {_selectedTerrain?.DisplayName ?? _selectedTerrain?.Id ?? "-"}{HoveredTileMetadataSuffix(e.X, e.Y)}{ShiftStatusSuffix()}"
                 : "地图画布";
         };
         _canvas.TerrainPicked += (_, e) => SelectTerrain(e.TerrainId);
@@ -587,35 +615,49 @@ public sealed class MapEditorForm : Form
         var tilesetHeader = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 6,
             RowCount = 1,
             Margin = new Padding(0)
         };
         tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
-        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
-        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+        tilesetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
 
         _tilesetInfoLabel.Dock = DockStyle.Fill;
         _tilesetInfoLabel.TextAlign = ContentAlignment.MiddleLeft;
         _tilesetInfoLabel.Text = "图集: 未导入";
         ConfigurePaletteButton(_useTerrainBrushButton, "地形", UseTerrainBrush);
         ConfigurePaletteButton(_useTilesetBrushButton, "图块", UseTilesetBrush);
+        ConfigurePaletteButton(_editTileMetadataButton, "属性", EditSelectedTileMetadata);
+        ConfigurePaletteButton(_terrainFillModeButton, "填充", ToggleTerrainFillMode);
         ConfigurePaletteButton(_bindA2PaletteButton, "绑定", BindSelectedTerrainToAutoTile);
         _useTerrainBrushButton.Tag = "使用当前地形或自动元件绘制";
         _useTilesetBrushButton.Tag = "直接使用当前选中的图集单格绘制";
+        _editTileMetadataButton.Tag = "编辑当前选中图块的瓦片属性和碰撞";
+        _terrainFillModeButton.Tag = "图块画笔下启用高级自动地形填充";
         _bindA2PaletteButton.Tag = "把当前地形绑定到选中的 RPG Maker 自动元件块";
         _toolTip.SetToolTip(_useTerrainBrushButton, "使用当前地形或自动元件绘制");
         _toolTip.SetToolTip(_useTilesetBrushButton, "直接使用当前选中的图集单格绘制");
+        _toolTip.SetToolTip(_editTileMetadataButton, "编辑当前选中图块的瓦片属性和碰撞");
+        _toolTip.SetToolTip(_terrainFillModeButton, "图块画笔下启用高级自动地形填充");
         _toolTip.SetToolTip(_bindA2PaletteButton, "把当前地形绑定到选中的 RPG Maker 自动元件块");
         tilesetHeader.Controls.Add(_tilesetInfoLabel, 0, 0);
         tilesetHeader.Controls.Add(_useTerrainBrushButton, 1, 0);
         tilesetHeader.Controls.Add(_useTilesetBrushButton, 2, 0);
-        tilesetHeader.Controls.Add(_bindA2PaletteButton, 3, 0);
+        tilesetHeader.Controls.Add(_editTileMetadataButton, 3, 0);
+        tilesetHeader.Controls.Add(_terrainFillModeButton, 4, 0);
+        tilesetHeader.Controls.Add(_bindA2PaletteButton, 5, 0);
         panel.Controls.Add(tilesetHeader, 0, 0);
 
         _tilesetPalette.Dock = DockStyle.Fill;
-        _tilesetPalette.TileSelected += (_, e) => SelectTilesetTile(e.TileX, e.TileY, e.Width, e.Height, useAsBrush: true, preferTilesetBrush: e.PreferTilesetBrush, pattern: e.Pattern);
+        _tilesetPalette.TileSelected += (_, e) =>
+        {
+            _selectedAdvancedPattern = e.IsAdvancedTerrainPattern;
+            SelectTilesetTile(e.TileX, e.TileY, e.Width, e.Height, useAsBrush: true, preferTilesetBrush: e.PreferTilesetBrush, pattern: e.Pattern);
+        };
         panel.Controls.Add(_tilesetPalette, 0, 1);
         return panel;
     }
@@ -655,8 +697,7 @@ public sealed class MapEditorForm : Form
         ConfigureNumber(_widthBox, 8, 512, 64);
         ConfigureNumber(_heightBox, 8, 512, 64);
         ConfigureNumber(_tileSizeBox, 8, 128, 32);
-        _viewTypeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _viewTypeCombo.Items.AddRange(["TopDown", "Platformer", "Isometric"]);
+        ConfigureViewTypeCombo(_viewTypeCombo);
 
         AddRow(panel, 0, "ID", _idBox);
         AddRow(panel, 1, "名称", _nameBox);
@@ -792,6 +833,84 @@ public sealed class MapEditorForm : Form
         return box;
     }
 
+    private void ConfigureViewTypeCombo(ComboBox combo, string selectedValue = "TopDown")
+    {
+        combo.Dock = combo.Dock == DockStyle.None ? DockStyle.Fill : combo.Dock;
+        combo.DropDownStyle = ComboBoxStyle.DropDownList;
+        combo.Items.Clear();
+        combo.Items.AddRange(ViewTypeChoices().Cast<object>().ToArray());
+        SelectViewType(combo, selectedValue);
+    }
+
+    private IReadOnlyList<ViewTypeChoice> ViewTypeChoices()
+    {
+        return
+        [
+            new("TopDown", T("dataEditor.option.viewType.TopDown", "俯视图")),
+            new("Platformer", T("dataEditor.option.viewType.Platformer", "横版")),
+            new("Isometric", T("dataEditor.option.viewType.Isometric", "等距视角"))
+        ];
+    }
+
+    private static void SelectViewType(ComboBox combo, string? value)
+    {
+        var normalized = NormalizeViewType(value);
+        for (var index = 0; index < combo.Items.Count; index++)
+        {
+            if (combo.Items[index] is ViewTypeChoice choice
+                && string.Equals(choice.Value, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                combo.SelectedIndex = index;
+                return;
+            }
+        }
+
+        combo.SelectedIndex = combo.Items.Count > 0 ? 0 : -1;
+    }
+
+    private static string SelectedViewTypeValue(ComboBox combo)
+    {
+        return combo.SelectedItem is ViewTypeChoice choice
+            ? choice.Value
+            : NormalizeViewType(combo.SelectedItem?.ToString());
+    }
+
+    private static string NormalizeViewType(string? value)
+    {
+        if (string.Equals(value, "SideView", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Platformer";
+        }
+
+        return string.IsNullOrWhiteSpace(value) ? "TopDown" : value;
+    }
+
+    private static Color ParseColorOrDefault(string? text)
+    {
+        try
+        {
+            return string.IsNullOrWhiteSpace(text) ? Color.FromArgb(31, 41, 55) : ColorTranslator.FromHtml(text.Trim());
+        }
+        catch
+        {
+            return Color.FromArgb(31, 41, 55);
+        }
+    }
+
+    private static void UpdateBackgroundColorPreview(string? text, Button button)
+    {
+        var color = ParseColorOrDefault(text);
+        button.BackColor = color;
+        button.ForeColor = GetContrastColor(color);
+        button.FlatAppearance.BorderColor = Color.FromArgb(120, Color.Black);
+    }
+
+    private static Color GetContrastColor(Color color)
+    {
+        var luminance = (color.R * 299 + color.G * 587 + color.B * 114) / 1000;
+        return luminance >= 140 ? Color.Black : Color.White;
+    }
+
     private static Label HeaderLabel(string text)
     {
         return new Label
@@ -919,7 +1038,7 @@ public sealed class MapEditorForm : Form
         foreach (var map in _context.Project.AssetLibrary.Maps)
         {
             MapDefaults.Normalize(map);
-            if (map.TilesetPlan.Regions.Count > 0)
+            if (map.TilesetPlan.Regions.Count > 0 || map.TilesetPlan.Advanced.WangSets.Count > 0)
             {
                 ApplyTilesetPlanToTerrains(map);
             }
@@ -954,6 +1073,9 @@ public sealed class MapEditorForm : Form
             ClearMapHistory();
         }
 
+        _terrainFillModeEnabled = false;
+        _canvas.TerrainFillModeEnabled = false;
+
         if (_selectedMap is not null)
         {
             MapDefaults.Normalize(_selectedMap);
@@ -976,90 +1098,19 @@ public sealed class MapEditorForm : Form
             return;
         }
 
-        using var dialog = new Form
-        {
-            Text = "地图设定",
-            StartPosition = FormStartPosition.CenterParent,
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            MinimizeBox = false,
-            MaximizeBox = false,
-            ClientSize = new Size(440, 510),
-            Font = Font,
-            ShowInTaskbar = false
-        };
+        using var dialog = new MapSettingsDialog(_localization);
         TabSelectAllBehavior.InstallRecursive(dialog);
-
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            ColumnCount = 1,
-            RowCount = 2
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
-
-        var panel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            ColumnCount = 2
-        };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 9; i++)
-        {
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, i == 2 ? 72 : 34));
-        }
-
-        var idBox = new TextBox { Dock = DockStyle.Fill, Text = _selectedMap.Id };
-        var nameBox = new TextBox { Dock = DockStyle.Fill, Text = _selectedMap.DisplayName };
-        var descriptionBox = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical, Text = _selectedMap.Description };
-        var viewTypeCombo = new ComboBox { Dock = DockStyle.Left, Width = 136, DropDownStyle = ComboBoxStyle.DropDownList };
-        viewTypeCombo.Items.AddRange(["TopDown", "Platformer", "Isometric"]);
-        viewTypeCombo.SelectedItem = _selectedMap.ViewType;
-        if (viewTypeCombo.SelectedIndex < 0)
-        {
-            viewTypeCombo.SelectedIndex = 0;
-        }
-
-        TabSelectAllBehavior.Attach(idBox);
-        TabSelectAllBehavior.Attach(nameBox);
-        TabSelectAllBehavior.Attach(descriptionBox);
-        var widthBox = CreateDialogNumber(8, 512, _selectedMap.Width);
-        var heightBox = CreateDialogNumber(8, 512, _selectedMap.Height);
-        var tileSizeBox = CreateDialogNumber(8, 128, _selectedMap.TileSize);
-        var tilesetBox = new TextBox { Dock = DockStyle.Fill, Text = _selectedMap.Tileset };
-        var backgroundBox = new TextBox { Dock = DockStyle.Fill, Text = _selectedMap.BackgroundColor };
-        TabSelectAllBehavior.Attach(tilesetBox);
-        TabSelectAllBehavior.Attach(backgroundBox);
-
-        AddRow(panel, 0, "ID", idBox);
-        AddRow(panel, 1, "名称", nameBox);
-        AddRow(panel, 2, "描述", descriptionBox);
-        AddRow(panel, 3, "视角", viewTypeCombo);
-        AddRow(panel, 4, "宽度", widthBox);
-        AddRow(panel, 5, "高度", heightBox);
-        AddRow(panel, 6, "瓦片", tileSizeBox);
-        AddRow(panel, 7, "图块集", tilesetBox);
-        AddRow(panel, 8, "背景", backgroundBox);
-
-        var buttons = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Height = 52,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(10, 10, 10, 6)
-        };
-        var okButton = new Button { Text = "确定", DialogResult = DialogResult.OK, Width = 88, Height = 30 };
-        var cancelButton = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Width = 88, Height = 30 };
-        buttons.Controls.Add(okButton);
-        buttons.Controls.Add(cancelButton);
-        dialog.AcceptButton = okButton;
-        dialog.CancelButton = cancelButton;
-        root.Controls.Add(panel, 0, 0);
-        root.Controls.Add(buttons, 0, 1);
-        dialog.Controls.Add(root);
+        
+        dialog.SetValues(
+            _selectedMap.Id,
+            _selectedMap.DisplayName,
+            _selectedMap.Description,
+            _selectedMap.ViewType,
+            _selectedMap.Width,
+            _selectedMap.Height,
+            _selectedMap.TileSize,
+            _selectedMap.Tileset,
+            _selectedMap.BackgroundColor);
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
@@ -1067,15 +1118,26 @@ public sealed class MapEditorForm : Form
         }
 
         ApplyMapSettings(
-            idBox.Text,
-            nameBox.Text,
-            descriptionBox.Text,
-            viewTypeCombo.SelectedItem?.ToString() ?? "TopDown",
-            (int)widthBox.Value,
-            (int)heightBox.Value,
-            (int)tileSizeBox.Value,
-            tilesetBox.Text,
-            backgroundBox.Text);
+            dialog.MapId,
+            dialog.MapName,
+            dialog.MapDescription,
+            dialog.ViewType,
+            dialog.MapWidth,
+            dialog.MapHeight,
+            dialog.TileSize,
+            dialog.Tileset,
+            dialog.BackgroundColor);
+    }
+
+    private static Label CreateLabel(string text)
+    {
+        return new Label
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = Padding.Empty
+        };
     }
 
     private void ApplyMapSettings(string id, string name, string description, string viewType, int width, int height, int tileSize, string tileset, string background)
@@ -1091,7 +1153,7 @@ public sealed class MapEditorForm : Form
         _selectedMap.Id = string.IsNullOrWhiteSpace(id) ? _selectedMap.Id : id.Trim();
         _selectedMap.DisplayName = string.IsNullOrWhiteSpace(name) ? _selectedMap.Id : name.Trim();
         _selectedMap.Description = description.Trim();
-        _selectedMap.ViewType = string.IsNullOrWhiteSpace(viewType) ? "TopDown" : viewType;
+        _selectedMap.ViewType = NormalizeViewType(viewType);
         _selectedMap.Width = width;
         _selectedMap.Height = height;
         _selectedMap.TileSize = tileSize;
@@ -1137,11 +1199,7 @@ public sealed class MapEditorForm : Form
             _idBox.Text = _selectedMap.Id;
             _nameBox.Text = _selectedMap.DisplayName;
             _descriptionBox.Text = _selectedMap.Description;
-            _viewTypeCombo.SelectedItem = _selectedMap.ViewType;
-            if (_viewTypeCombo.SelectedIndex < 0)
-            {
-                _viewTypeCombo.SelectedIndex = 0;
-            }
+            SelectViewType(_viewTypeCombo, _selectedMap.ViewType);
 
             _widthBox.Value = Math.Clamp(_selectedMap.Width, (int)_widthBox.Minimum, (int)_widthBox.Maximum);
             _heightBox.Value = Math.Clamp(_selectedMap.Height, (int)_heightBox.Minimum, (int)_heightBox.Maximum);
@@ -1246,6 +1304,7 @@ public sealed class MapEditorForm : Form
             e.Graphics.FillRectangle(brush, swatch);
             e.Graphics.FillRectangle(edgeBrush, swatch.Left, swatch.Top, swatch.Width, 5);
             e.Graphics.FillRectangle(edgeBrush, swatch.Left, swatch.Bottom - 5, swatch.Width, 5);
+            DrawTerrainRepresentativeTile(e.Graphics, swatch, terrain);
             e.Graphics.DrawRectangle(Pens.White, swatch);
             if (ReferenceEquals(_selectedTerrain, terrain))
             {
@@ -1255,6 +1314,31 @@ public sealed class MapEditorForm : Form
         };
         button.Click += (_, _) => SelectTerrain(terrain.Id);
         return button;
+    }
+
+    private void DrawTerrainRepresentativeTile(Graphics graphics, Rectangle swatch, MapTerrainDefinition terrain)
+    {
+        if (_selectedMap is null || string.IsNullOrWhiteSpace(_selectedMap.TilesetImagePath) || !File.Exists(_selectedMap.TilesetImagePath))
+        {
+            return;
+        }
+
+        if (terrain.TileX < 0 || terrain.TileY < 0)
+        {
+            return;
+        }
+
+        using var stream = File.OpenRead(_selectedMap.TilesetImagePath);
+        using var image = Image.FromStream(stream);
+        var tileSize = CurrentTilesetTileSize(_selectedMap);
+        var source = new Rectangle(terrain.TileX * tileSize, terrain.TileY * tileSize, tileSize, tileSize);
+        if (source.Right > image.Width || source.Bottom > image.Height)
+        {
+            return;
+        }
+
+        var preview = Rectangle.Inflate(swatch, -6, -6);
+        graphics.DrawImage(image, preview, source, GraphicsUnit.Pixel);
     }
 
     private void SelectTerrain(string? terrainId)
@@ -1340,15 +1424,41 @@ public sealed class MapEditorForm : Form
         _tilesetPalette.SelectedTile = _selectedTilesetTile;
         var isA1OverlayTile = IsA1OverlayTile(tileX, tileY);
         var isA1OverlayAnimated = IsA1AnimatedOverlayTile(tileX, tileY);
+        var selectedWangTerrain = FindPlannedWangTerrain(tileX, tileY);
         if (useAsBrush)
         {
-            if (pattern is { Count: > 0 } && TryCreateTerrainPattern(pattern, out var terrainPattern))
+            if (_terrainFillModeEnabled && selectedWangTerrain is not null)
+            {
+                SelectTerrain(selectedWangTerrain.Id);
+                _shiftTerrain = null;
+                _canvas.SetShiftTerrain(_shiftTerrain);
+                if (pattern is { Count: > 0 })
+                {
+                    _canvas.SetTilesetPatternSelection(pattern, isA1OverlayTile, isA1OverlayAnimated);
+                }
+                else
+                {
+                    _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
+                }
+
+                _canvas.TerrainFillModeEnabled = true;
+                _canvas.UseTilesetBrush();
+            }
+            else if (pattern is { Count: > 0 } && TryCreateTerrainPattern(pattern, out var terrainPattern))
             {
                 SelectTerrain(terrainPattern[0].TerrainId);
                 _shiftTerrain = _selectedTerrain;
                 _canvas.SetShiftTerrain(_shiftTerrain);
                 _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
                 _canvas.SetTerrainPatternSelection(terrainPattern);
+                _canvas.UseTerrainBrush();
+            }
+            else if (!preferTilesetBrush && selectedWangTerrain is not null)
+            {
+                SelectTerrain(selectedWangTerrain.Id);
+                _shiftTerrain = null;
+                _canvas.SetShiftTerrain(_shiftTerrain);
+                _canvas.SetTilesetSelection(tileX, tileY, width, height, isA1OverlayTile, isA1OverlayAnimated);
                 _canvas.UseTerrainBrush();
             }
             else if (!preferTilesetBrush && TrySelectPlannedAutoTerrain(tileX, tileY))
@@ -1360,6 +1470,9 @@ public sealed class MapEditorForm : Form
             }
             else
             {
+                _terrainFillModeEnabled = false;
+                _canvas.TerrainFillModeEnabled = false;
+                _selectedAdvancedPattern = false;
                 _shiftTerrain = null;
                 _canvas.SetShiftTerrain(_shiftTerrain);
                 if (pattern is { Count: > 0 })
@@ -1395,7 +1508,8 @@ public sealed class MapEditorForm : Form
                 return false;
             }
 
-            var terrain = FindPlannedAutoTerrain(cell.TileX, cell.TileY);
+            var terrain = FindPlannedWangTerrain(cell.TileX, cell.TileY)
+                ?? FindPlannedAutoTerrain(cell.TileX, cell.TileY);
             if (terrain is null)
             {
                 terrainPattern.Clear();
@@ -1433,6 +1547,61 @@ public sealed class MapEditorForm : Form
 
         SelectTerrain(terrain.Id);
         return true;
+    }
+
+    private bool TrySelectPlannedWangTerrain(int tileX, int tileY)
+    {
+        var terrain = FindPlannedWangTerrain(tileX, tileY);
+        if (terrain is null)
+        {
+            return false;
+        }
+
+        SelectTerrain(terrain.Id);
+        return true;
+    }
+
+    private MapTerrainDefinition? FindPlannedWangTerrain(int tileX, int tileY)
+    {
+        if (_selectedMap?.TilesetPlan?.Advanced?.WangSets is null)
+        {
+            return null;
+        }
+
+        foreach (var set in _selectedMap.TilesetPlan.Advanced.WangSets)
+        {
+            var tile = set.Tiles.FirstOrDefault(v => v.TileX == tileX && v.TileY == tileY);
+            if (tile is null)
+            {
+                continue;
+            }
+
+            var colorIndex = MostUsedWangColor(tile.WangId);
+            if (colorIndex <= 0)
+            {
+                continue;
+            }
+
+            var terrainId = WangAutoTile.TerrainId(set.Id, colorIndex);
+            var terrain = _selectedMap.Terrains.FirstOrDefault(v => string.Equals(v.Id, terrainId, StringComparison.OrdinalIgnoreCase));
+            if (terrain is not null)
+            {
+                return terrain;
+            }
+        }
+
+        return null;
+    }
+
+    private static int MostUsedWangColor(IReadOnlyList<int> wangId)
+    {
+        return wangId
+            .Where(v => v > 0)
+            .GroupBy(v => v)
+            .OrderByDescending(v => v.Count())
+            .ThenBy(v => v.Key)
+            .Select(v => v.Key)
+            .FirstOrDefault();
     }
 
     private MapTerrainDefinition? FindPlannedAutoTerrain(int tileX, int tileY)
@@ -1492,8 +1661,45 @@ public sealed class MapEditorForm : Form
             && tileY < region.Y + region.Height);
     }
 
+    private string HoveredTileMetadataSuffix(int mapX, int mapY)
+    {
+        if (_selectedMap is null || _selectedLayer is null || !_selectedLayer.Kind.Equals("Tile", StringComparison.OrdinalIgnoreCase))
+        {
+            return "";
+        }
+
+        var cell = _selectedLayer.Tiles.FirstOrDefault(tile => tile.X == mapX && tile.Y == mapY);
+        if (cell is null)
+        {
+            return "";
+        }
+
+        var tileX = cell.TileX;
+        var tileY = cell.TileY;
+        if ((tileX < 0 || tileY < 0)
+            && !string.IsNullOrWhiteSpace(cell.TerrainId)
+            && _selectedMap.Terrains.FirstOrDefault(terrain => string.Equals(terrain.Id, cell.TerrainId, StringComparison.OrdinalIgnoreCase)) is { } terrain)
+        {
+            tileX = terrain.TileX;
+            tileY = terrain.TileY;
+        }
+
+        var metadata = TilesetTileMetadataResolver.Find(_selectedMap.TilesetPlan, tileX, tileY);
+        var summary = TilesetTileMetadataResolver.Summary(metadata);
+        if (metadata is not null)
+        {
+            var rule = TilesetTileRuleResolver.Resolve(metadata, _context.Project.AssetLibrary.TerrainRules);
+            var source = rule.HasTileMoveCostOverride ? "覆盖" : "规则";
+            summary = $"{summary} | 实际移动 {rule.MoveCost:0.##}({source})";
+        }
+
+        return string.IsNullOrWhiteSpace(summary) ? "" : $" | {summary}";
+    }
+
     private void UseTerrainBrush()
     {
+        _terrainFillModeEnabled = false;
+        _canvas.TerrainFillModeEnabled = false;
         _canvas.UseTerrainBrush();
         UpdateStatusText();
         UpdateBrushButtons();
@@ -1510,6 +1716,169 @@ public sealed class MapEditorForm : Form
         _canvas.UseTilesetBrush();
         UpdateStatusText();
         UpdateBrushButtons();
+    }
+
+    private void ToggleTerrainFillMode()
+    {
+        if (_selectedTilesetTile.X < 0 || _selectedTilesetTile.Y < 0)
+        {
+            MessageBox.Show(this, "请先在图集中选择一个瓦片。", "地形填充", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (FindPlannedWangTerrain(_selectedTilesetTile.X, _selectedTilesetTile.Y) is null)
+        {
+            MessageBox.Show(this, "当前选中的图块不属于高级自动地形集合。", "地形填充", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        _terrainFillModeEnabled = !_terrainFillModeEnabled;
+        _canvas.TerrainFillModeEnabled = _terrainFillModeEnabled;
+        _canvas.UseTilesetBrush();
+        UpdateStatusText();
+        UpdateBrushButtons();
+    }
+
+    private void GenerateCollisionLayerFromTileMetadata()
+    {
+        if (_selectedMap is null)
+        {
+            return;
+        }
+
+        if (_selectedMap.TilesetPlan?.Tiles is not { Count: > 0 })
+        {
+            MessageBox.Show(this, "当前图集还没有配置瓦片属性或碰撞形状。", "生成碰撞", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var collisionLayer = _selectedMap.Layers.FirstOrDefault(layer => layer.Kind.Equals("Collision", StringComparison.OrdinalIgnoreCase))
+            ?? _selectedMap.Layers.FirstOrDefault(layer => string.Equals(layer.Id, MapDefaults.CollisionLayerId, StringComparison.OrdinalIgnoreCase));
+        if (collisionLayer is null)
+        {
+            collisionLayer = new MapLayerDefinition
+            {
+                Id = MapDefaults.CollisionLayerId,
+                Name = "碰撞",
+                Kind = "Collision",
+                Visible = true,
+                Opacity = 0.55f
+            };
+            _selectedMap.Layers.Add(collisionLayer);
+        }
+
+        BeginMapEditHistory();
+        var removed = collisionLayer.Tiles.RemoveAll(tile => string.Equals(tile.Tag, "tileMetadataCollision", StringComparison.OrdinalIgnoreCase));
+
+        var terrains = _selectedMap.Terrains.ToDictionary(terrain => terrain.Id, StringComparer.OrdinalIgnoreCase);
+        var existing = collisionLayer.Tiles.ToDictionary(tile => (tile.X, tile.Y));
+        var added = 0;
+        foreach (var layer in _selectedMap.Layers.Where(layer => layer.Kind.Equals("Tile", StringComparison.OrdinalIgnoreCase) && layer.Visible))
+        {
+            foreach (var cell in layer.Tiles)
+            {
+                if (!TryResolveMapTileSource(cell, terrains, out var tileX, out var tileY)
+                    || !TilesetTileMetadataResolver.TryFind(_selectedMap.TilesetPlan, tileX, tileY, out var metadata)
+                    || metadata.CollisionShapes.Count <= 0
+                    || existing.ContainsKey((cell.X, cell.Y)))
+                {
+                    continue;
+                }
+
+                var collisionCell = new MapTileCell
+                {
+                    X = cell.X,
+                    Y = cell.Y,
+                    TerrainId = "tileMetadataCollision",
+                    Solid = true,
+                    Tag = "tileMetadataCollision"
+                };
+                collisionLayer.Tiles.Add(collisionCell);
+                existing[(cell.X, cell.Y)] = collisionCell;
+                added++;
+            }
+        }
+
+        var changed = added > 0 || removed > 0;
+        CompleteMapEditHistory(changed);
+        RefreshLayerList();
+        SelectLayer(collisionLayer);
+        UpdateLayerListText();
+        _canvas.Invalidate();
+        if (changed)
+        {
+            SaveProject();
+        }
+
+        MessageBox.Show(this, $"已生成 {added} 个碰撞格，清理旧碰撞 {removed} 个。", "生成碰撞", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private void EditSelectedTileMetadata()
+    {
+        if (_selectedMap is null)
+        {
+            return;
+        }
+
+        if (_selectedTilesetTile.X < 0 || _selectedTilesetTile.Y < 0)
+        {
+            MessageBox.Show(this, "请先在图集中选择一个瓦片。", "瓦片属性", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_selectedMap.TilesetImagePath) || !File.Exists(_selectedMap.TilesetImagePath))
+        {
+            MessageBox.Show(this, "请先导入一张图集图片。", "瓦片属性", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        MapDefaults.Normalize(_selectedMap);
+        using var stream = File.OpenRead(_selectedMap.TilesetImagePath);
+        using var image = Image.FromStream(stream);
+        var existing = TilesetTileMetadataResolver.Find(_selectedMap.TilesetPlan, _selectedTilesetTile.X, _selectedTilesetTile.Y);
+        var working = existing is null
+            ? new TilesetTileMetadataDefinition { TileX = _selectedTilesetTile.X, TileY = _selectedTilesetTile.Y }
+            : CloneTilesetTile(existing);
+
+        if (!TilesetPlannerDialog.TryEditTileMetadata(this, image, CurrentTilesetTileSize(_selectedMap), working, Font))
+        {
+            return;
+        }
+
+        _selectedMap.TilesetPlan.Tiles.RemoveAll(tile => tile.TileX == working.TileX && tile.TileY == working.TileY);
+        _selectedMap.TilesetPlan.Tiles.Add(working);
+        MapDefaults.Normalize(_selectedMap);
+        _tilesetPalette.SetTilesetPlan(_selectedMap.TilesetPlan);
+        _canvas.Invalidate();
+        UpdateTilesetInfo();
+        UpdateStatusText();
+        SaveProject();
+    }
+
+    private static bool TryResolveMapTileSource(
+        MapTileCell cell,
+        IReadOnlyDictionary<string, MapTerrainDefinition> terrains,
+        out int tileX,
+        out int tileY)
+    {
+        tileX = cell.TileX;
+        tileY = cell.TileY;
+        if (tileX >= 0 && tileY >= 0)
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(cell.TerrainId)
+            && terrains.TryGetValue(cell.TerrainId, out var terrain)
+            && terrain.TileX >= 0
+            && terrain.TileY >= 0)
+        {
+            tileX = terrain.TileX;
+            tileY = terrain.TileY;
+            return true;
+        }
+
+        return false;
     }
 
     private void SelectTool(MapEditorTool tool)
@@ -1645,7 +2014,7 @@ public sealed class MapEditorForm : Form
             _idBox.Text,
             _nameBox.Text,
             _descriptionBox.Text,
-            _viewTypeCombo.SelectedItem?.ToString() ?? "TopDown",
+            SelectedViewTypeValue(_viewTypeCombo),
             (int)_widthBox.Value,
             (int)_heightBox.Value,
             (int)_tileSizeBox.Value,
@@ -1819,7 +2188,59 @@ public sealed class MapEditorForm : Form
             Mode = source.Mode,
             RpgMakerKind = source.RpgMakerKind,
             RpgMakerLayout = source.RpgMakerLayout,
-            Regions = source.Regions.Select(CloneTilesetRegion).ToList()
+            Regions = source.Regions.Select(CloneTilesetRegion).ToList(),
+            Tiles = source.Tiles.Select(CloneTilesetTile).ToList(),
+            Advanced = CloneTilesetAdvancedPlan(source.Advanced)
+        };
+    }
+
+    private static TilesetAdvancedPlanDefinition CloneTilesetAdvancedPlan(TilesetAdvancedPlanDefinition source)
+    {
+        return new TilesetAdvancedPlanDefinition
+        {
+            AllowFlipHorizontally = source.AllowFlipHorizontally,
+            AllowFlipVertically = source.AllowFlipVertically,
+            AllowRotate = source.AllowRotate,
+            PreferUntransformedTiles = source.PreferUntransformedTiles,
+            WangSets = source.WangSets.Select(CloneTilesetWangSet).ToList()
+        };
+    }
+
+    private static TilesetWangSetDefinition CloneTilesetWangSet(TilesetWangSetDefinition source)
+    {
+        return new TilesetWangSetDefinition
+        {
+            Id = source.Id,
+            Name = source.Name,
+            Type = source.Type,
+            TileX = source.TileX,
+            TileY = source.TileY,
+            Colors = source.Colors.Select(CloneTilesetWangColor).ToList(),
+            Tiles = source.Tiles.Select(CloneTilesetWangTile).ToList()
+        };
+    }
+
+    private static TilesetWangColorDefinition CloneTilesetWangColor(TilesetWangColorDefinition source)
+    {
+        return new TilesetWangColorDefinition
+        {
+            Index = source.Index,
+            Name = source.Name,
+            ColorHex = source.ColorHex,
+            Probability = source.Probability,
+            TileX = source.TileX,
+            TileY = source.TileY
+        };
+    }
+
+    private static TilesetWangTileDefinition CloneTilesetWangTile(TilesetWangTileDefinition source)
+    {
+        return new TilesetWangTileDefinition
+        {
+            TileX = source.TileX,
+            TileY = source.TileY,
+            Probability = source.Probability,
+            WangId = source.WangId.ToList()
         };
     }
 
@@ -1834,7 +2255,48 @@ public sealed class MapEditorForm : Form
             X = source.X,
             Y = source.Y,
             Width = source.Width,
-            Height = source.Height
+            Height = source.Height,
+            Animated = source.Animated,
+            AnimationFrameDurationMs = source.AnimationFrameDurationMs,
+            AnimationFrames = source.AnimationFrames.Select(frame => new TilesetFrameDefinition
+            {
+                TileX = frame.TileX,
+                TileY = frame.TileY,
+                DurationMs = frame.DurationMs
+            }).ToList()
+        };
+    }
+
+    private static TilesetTileMetadataDefinition CloneTilesetTile(TilesetTileMetadataDefinition source)
+    {
+        return new TilesetTileMetadataDefinition
+        {
+            TileX = source.TileX,
+            TileY = source.TileY,
+            DisplayName = source.DisplayName,
+            Category = source.Category,
+            Walkable = source.Walkable,
+            BlocksSight = source.BlocksSight,
+            MoveCost = source.MoveCost,
+            MaterialTag = source.MaterialTag,
+            FootstepSoundId = source.FootstepSoundId,
+            Tags = source.Tags.ToList(),
+            CustomProperties = new Dictionary<string, string>(source.CustomProperties, StringComparer.OrdinalIgnoreCase),
+            CollisionShapes = source.CollisionShapes.Select(CloneTileCollisionShape).ToList()
+        };
+    }
+
+    private static TileCollisionShapeDefinition CloneTileCollisionShape(TileCollisionShapeDefinition source)
+    {
+        return new TileCollisionShapeDefinition
+        {
+            ShapeType = source.ShapeType,
+            X = source.X,
+            Y = source.Y,
+            Width = source.Width,
+            Height = source.Height,
+            Tag = source.Tag,
+            Points = source.Points.Select(point => new TileCollisionPointDefinition { X = point.X, Y = point.Y }).ToList()
         };
     }
 
@@ -1851,7 +2313,15 @@ public sealed class MapEditorForm : Form
             AnimationFrames = source.AnimationFrames,
             AnimationFps = source.AnimationFps,
             TileX = source.TileX,
-            TileY = source.TileY
+            TileY = source.TileY,
+            Frames = source.Frames?
+                .Select(frame => new TilesetFrameDefinition
+                {
+                    TileX = frame.TileX,
+                    TileY = frame.TileY,
+                    DurationMs = frame.DurationMs
+                })
+                .ToList() ?? []
         };
     }
 
@@ -1920,7 +2390,11 @@ public sealed class MapEditorForm : Form
         var layer = _selectedLayer?.Name ?? "-";
         var terrain = _selectedTerrain?.DisplayName ?? _selectedTerrain?.Id ?? "-";
         var brush = _canvas.BrushSource == MapBrushSource.Tileset && _selectedTilesetTile.X >= 0
-            ? $"图块 {_selectedTilesetTile.X},{_selectedTilesetTile.Y}"
+            ? _terrainFillModeEnabled
+                ? $"图块填充 {_selectedTilesetTile.X},{_selectedTilesetTile.Y}"
+                : _selectedAdvancedPattern
+                    ? $"高级图案 {_selectedTilesetTile.X},{_selectedTilesetTile.Y}"
+                : $"图块 {_selectedTilesetTile.X},{_selectedTilesetTile.Y}"
             : $"地形 {terrain}";
         var animation = _canvas.AnimationEnabled
             ? T("mapEditor.animation.statusDynamic", "动态预览")
@@ -2145,6 +2619,33 @@ public sealed class MapEditorForm : Form
             region.Y += yOffset;
             return region;
         }));
+        var tiles = existingPlan.Tiles.Select(CloneTilesetTile).ToList();
+        tiles.AddRange(appendedPlan.Tiles.Select(tile =>
+        {
+            var clone = CloneTilesetTile(tile);
+            clone.TileY += yOffset;
+            return clone;
+        }));
+
+        var advanced = CloneTilesetAdvancedPlan(existingPlan.Advanced);
+        advanced.WangSets.AddRange(CloneTilesetAdvancedPlan(appendedPlan.Advanced).WangSets.Select(set =>
+        {
+            set.Id = string.IsNullOrWhiteSpace(set.Id)
+                ? $"wangset.{Guid.NewGuid():N}"
+                : $"{set.Id}.append.{Guid.NewGuid():N}";
+            set.TileY = set.TileY < 0 ? -1 : set.TileY + yOffset;
+            foreach (var color in set.Colors)
+            {
+                color.TileY = color.TileY < 0 ? -1 : color.TileY + yOffset;
+            }
+
+            foreach (var tile in set.Tiles)
+            {
+                tile.TileY += yOffset;
+            }
+
+            return set;
+        }));
 
         return new TilesetPlanDefinition
         {
@@ -2152,7 +2653,9 @@ public sealed class MapEditorForm : Form
             Mode = existingPlan.Mode,
             RpgMakerKind = existingPlan.RpgMakerKind,
             RpgMakerLayout = existingPlan.RpgMakerLayout,
-            Regions = regions
+            Regions = regions,
+            Tiles = tiles,
+            Advanced = advanced
         };
     }
 
@@ -2181,7 +2684,9 @@ public sealed class MapEditorForm : Form
             Mode = plan.Mode,
             RpgMakerKind = plan.RpgMakerKind,
             RpgMakerLayout = plan.RpgMakerLayout,
-            Regions = CloneTilesetRegions(plan.Regions)
+            Regions = CloneTilesetRegions(plan.Regions),
+            Tiles = plan.Tiles.Select(CloneTilesetTile).ToList(),
+            Advanced = CloneTilesetAdvancedPlan(plan.Advanced)
         };
 
         if (result.Regions.Count > 0)
@@ -2252,6 +2757,14 @@ public sealed class MapEditorForm : Form
             region.Y = Math.Max(0, (int)Math.Floor(top / (double)newTileSize));
             region.Width = Math.Max(1, (int)Math.Ceiling(right / (double)newTileSize) - region.X);
             region.Height = Math.Max(1, (int)Math.Ceiling(bottom / (double)newTileSize) - region.Y);
+        }
+
+        foreach (var tile in plan.Tiles)
+        {
+            var left = tile.TileX * oldTileSize;
+            var top = tile.TileY * oldTileSize;
+            tile.TileX = Math.Max(0, (int)Math.Floor(left / (double)newTileSize));
+            tile.TileY = Math.Max(0, (int)Math.Floor(top / (double)newTileSize));
         }
     }
 
@@ -2354,11 +2867,18 @@ public sealed class MapEditorForm : Form
 
         _selectedMap.TilesetPlan = dialog.Plan;
         ApplyTilesetPlanToTerrains(_selectedMap);
+        var removedTileCount = ClearInvalidTilesetPlanReferences(_selectedMap);
         _tilesetPalette.SetTilesetPlan(_selectedMap.TilesetPlan);
         RefreshTerrainPalette();
         SelectTerrain(_selectedTerrain?.Id ?? _selectedMap.Terrains.FirstOrDefault()?.Id);
         UpdateTilesetInfo();
         UpdateA2Highlight();
+        if (removedTileCount > 0)
+        {
+            UpdateLayerListText();
+            _canvas.Invalidate();
+        }
+
         SaveProject();
     }
 
@@ -2400,6 +2920,9 @@ public sealed class MapEditorForm : Form
 
         var name = Path.GetFileName(_selectedMap.TilesetImagePath);
         var tileText = _selectedTilesetTile.X >= 0 ? $" | 当前图块 {_selectedTilesetTile.X},{_selectedTilesetTile.Y}" : "";
+        var metadataText = _selectedTilesetTile.X >= 0
+            ? TileMetadataInfoText(_selectedTilesetTile.X, _selectedTilesetTile.Y)
+            : "";
         var autoText = _selectedTerrain is not null && RpgMakerAutoTile.IsA1(_selectedTerrain)
             ? $" | {_selectedTerrain.DisplayName} A1 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
             : _selectedTerrain is not null && RpgMakerAutoTile.IsA2(_selectedTerrain)
@@ -2410,8 +2933,27 @@ public sealed class MapEditorForm : Form
                         ? $" | {_selectedTerrain.DisplayName} A4 {_selectedTerrain.TileX},{_selectedTerrain.TileY}"
                     : "";
         var regionCount = _selectedMap.TilesetPlan?.Regions?.Count ?? 0;
+        var wangCount = _selectedMap.TilesetPlan?.Advanced?.WangSets?.Sum(v => v.Tiles.Count) ?? 0;
         var planText = regionCount > 0 ? $" | 区域 {regionCount}" : "";
-        _tilesetInfoLabel.Text = $"图集: {name}{tileText}{autoText}{planText}";
+        var wangText = wangCount > 0 ? $" | 高级 {wangCount}" : "";
+        var fillText = _terrainFillModeEnabled ? " | 高级填充" : _selectedAdvancedPattern ? " | 高级图案" : "";
+        _tilesetInfoLabel.Text = $"图集: {name}{tileText}{metadataText}{autoText}{planText}{wangText}{fillText}";
+    }
+
+    private string TileMetadataInfoText(int tileX, int tileY)
+    {
+        var metadata = TilesetTileMetadataResolver.Find(_selectedMap?.TilesetPlan, tileX, tileY);
+        if (metadata is null)
+        {
+            return "";
+        }
+
+        var name = string.IsNullOrWhiteSpace(metadata.DisplayName) ? "属性" : metadata.DisplayName;
+        var collision = metadata.CollisionShapes.Count > 0 ? $" 碰撞{metadata.CollisionShapes.Count}" : "";
+        var rule = TilesetTileRuleResolver.Resolve(metadata, _context.Project.AssetLibrary.TerrainRules);
+        var walkable = rule.Walkable ? "可通行" : "不可通行";
+        var moveCostSource = rule.HasTileMoveCostOverride ? "覆盖" : "规则";
+        return $" | {name} {walkable} 移动{rule.MoveCost:0.##}({moveCostSource}){collision}";
     }
 
     private static void ApplyTilesetPlanToTerrains(MapDefinition map)
@@ -2452,18 +2994,6 @@ public sealed class MapEditorForm : Form
                 return CreateA4TerrainId(v.X, v.Y, sourceRegion);
             }))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var terrain in map.Terrains.Where(v =>
-            v.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase)
-            || v.Rule.Equals(MapDefaults.RuleRpgMakerA2, StringComparison.OrdinalIgnoreCase)
-            || v.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase)
-            || v.Rule.Equals(MapDefaults.RuleRpgMakerA4, StringComparison.OrdinalIgnoreCase)).ToList())
-        {
-            if (!expectedIds.Contains(terrain.Id) && IsGeneratedTilesetTerrain(terrain.Id))
-            {
-                map.Terrains.Remove(terrain);
-            }
-        }
 
         foreach (var origin in a1Origins)
         {
@@ -2577,6 +3107,106 @@ public sealed class MapEditorForm : Form
             terrain.TileX = origin.X;
             terrain.TileY = origin.Y;
         }
+
+        foreach (var set in map.TilesetPlan.Advanced.WangSets)
+        {
+            foreach (var color in set.Colors)
+            {
+                var id = WangAutoTile.TerrainId(set.Id, color.Index);
+                expectedIds.Add(id);
+                var terrain = map.Terrains.FirstOrDefault(v => string.Equals(v.Id, id, StringComparison.OrdinalIgnoreCase));
+                if (terrain is null)
+                {
+                    terrain = new MapTerrainDefinition
+                    {
+                        Id = id,
+                        DisplayName = $"{set.Name} {color.Name}",
+                        ColorHex = color.ColorHex,
+                        EdgeColorHex = color.ColorHex
+                    };
+                    map.Terrains.Add(terrain);
+                }
+                else
+                {
+                    terrain.DisplayName = $"{set.Name} {color.Name}";
+                    terrain.ColorHex = color.ColorHex;
+                    terrain.EdgeColorHex = color.ColorHex;
+                }
+
+                terrain.Rule = MapDefaults.RuleWangSet;
+                terrain.Animated = false;
+                terrain.AnimationFrames = 1;
+                terrain.AnimationFps = 4;
+                terrain.TileX = color.TileX;
+                terrain.TileY = color.TileY;
+            }
+        }
+
+        foreach (var terrain in map.Terrains.Where(v =>
+            v.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase)
+            || v.Rule.Equals(MapDefaults.RuleRpgMakerA2, StringComparison.OrdinalIgnoreCase)
+            || v.Rule.Equals(MapDefaults.RuleRpgMakerA3, StringComparison.OrdinalIgnoreCase)
+            || v.Rule.Equals(MapDefaults.RuleRpgMakerA4, StringComparison.OrdinalIgnoreCase)
+            || v.Rule.Equals(MapDefaults.RuleWangSet, StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            if (!expectedIds.Contains(terrain.Id) && IsGeneratedTilesetTerrain(terrain.Id))
+            {
+                map.Terrains.Remove(terrain);
+            }
+        }
+    }
+
+    private static int ClearInvalidTilesetPlanReferences(MapDefinition map)
+    {
+        var validIds = BuildValidGeneratedTilesetTerrainIds(map);
+        var removed = 0;
+        foreach (var layer in map.Layers)
+        {
+            for (var index = layer.Tiles.Count - 1; index >= 0; index--)
+            {
+                var tile = layer.Tiles[index];
+                if (string.IsNullOrWhiteSpace(tile.TerrainId)
+                    || !IsGeneratedTilesetTerrain(tile.TerrainId)
+                    || validIds.Contains(tile.TerrainId))
+                {
+                    continue;
+                }
+
+                layer.Tiles.RemoveAt(index);
+                removed++;
+            }
+        }
+
+        return removed;
+    }
+
+    private static HashSet<string> BuildValidGeneratedTilesetTerrainIds(MapDefinition map)
+    {
+        var validIds = map.Terrains
+            .Where(terrain => IsGeneratedTilesetTerrain(terrain.Id))
+            .Select(terrain => terrain.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var usedWangIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (map.TilesetPlan?.Advanced?.WangSets is null)
+        {
+            validIds.RemoveWhere(id => id.StartsWith("terrain.tileset.wang.", StringComparison.OrdinalIgnoreCase));
+            return validIds;
+        }
+
+        foreach (var set in map.TilesetPlan.Advanced.WangSets)
+        {
+            foreach (var colorIndex in set.Tiles.SelectMany(tile => tile.WangId).Where(value => value > 0).Distinct())
+            {
+                if (set.Colors.Any(color => color.Index == colorIndex))
+                {
+                    usedWangIds.Add(WangAutoTile.TerrainId(set.Id, colorIndex));
+                }
+            }
+        }
+
+        validIds.RemoveWhere(id => id.StartsWith("terrain.tileset.wang.", StringComparison.OrdinalIgnoreCase) && !usedWangIds.Contains(id));
+        return validIds;
     }
 
     private static List<TilesetRegionDefinition> CreateStandardA4Regions(int columns, int rows)
@@ -2752,7 +3382,8 @@ public sealed class MapEditorForm : Form
         return id.StartsWith("terrain.tileset.a1.", StringComparison.OrdinalIgnoreCase)
             || id.StartsWith("terrain.tileset.a2.", StringComparison.OrdinalIgnoreCase)
             || id.StartsWith("terrain.tileset.a3.", StringComparison.OrdinalIgnoreCase)
-            || id.StartsWith("terrain.tileset.a4.", StringComparison.OrdinalIgnoreCase);
+            || id.StartsWith("terrain.tileset.a4.", StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("terrain.tileset.wang.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateA1TerrainId(int x, int y, TilesetRegionDefinition? region)
@@ -2857,7 +3488,16 @@ public sealed class MapEditorForm : Form
         var useTileset = _canvas.BrushSource == MapBrushSource.Tileset;
         _useTerrainBrushButton.BackColor = useTileset ? SystemColors.Control : Color.FromArgb(215, 232, 255);
         _useTilesetBrushButton.BackColor = useTileset ? Color.FromArgb(215, 232, 255) : SystemColors.Control;
+        _terrainFillModeButton.BackColor = _terrainFillModeEnabled ? Color.FromArgb(215, 232, 255) : SystemColors.Control;
         _useTilesetBrushButton.Enabled = _selectedTilesetTile.X >= 0 && _selectedTilesetTile.Y >= 0;
+        _editTileMetadataButton.Enabled = _selectedMap is not null
+            && _selectedTilesetTile.X >= 0
+            && _selectedTilesetTile.Y >= 0
+            && !string.IsNullOrWhiteSpace(_selectedMap.TilesetImagePath)
+            && File.Exists(_selectedMap.TilesetImagePath);
+        _terrainFillModeButton.Enabled = _selectedTilesetTile.X >= 0
+            && _selectedTilesetTile.Y >= 0
+            && FindPlannedWangTerrain(_selectedTilesetTile.X, _selectedTilesetTile.Y) is not null;
         _bindA2PaletteButton.Enabled = _selectedTerrain is not null && _selectedTilesetTile.X >= 0 && _selectedTilesetTile.Y >= 0;
         UpdateHistoryButtons();
     }
@@ -2889,6 +3529,11 @@ public sealed class MapEditorForm : Form
         if (terrain.Rule.Equals(MapDefaults.RuleRpgMakerA1, StringComparison.OrdinalIgnoreCase))
         {
             return $"{terrain.DisplayName}\r\nA1动态";
+        }
+
+        if (terrain.Rule.Equals(MapDefaults.RuleWangSet, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{terrain.DisplayName}\r\n高级自动";
         }
 
         return terrain.Animated ? $"{terrain.DisplayName}\r\n动态" : terrain.DisplayName;

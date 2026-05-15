@@ -9,6 +9,7 @@ public static class MapDefaults
     public const string RuleRpgMakerA2 = "RpgMakerA2";
     public const string RuleRpgMakerA3 = "RpgMakerA3";
     public const string RuleRpgMakerA4 = "RpgMakerA4";
+    public const string RuleWangSet = "WangSet";
 
     public const string GroundLayerId = "layer.ground";
     public const string OverlayLayerId = "layer.overlay";
@@ -87,7 +88,12 @@ public static class MapDefaults
         map.TilesetPlan.RpgMakerKind = NormalizeRpgMakerTilesetKind(map.TilesetPlan.RpgMakerKind);
         map.TilesetPlan.RpgMakerLayout = NormalizeRpgMakerTilesetLayout(map.TilesetPlan.RpgMakerLayout);
         map.TilesetPlan.Regions ??= [];
+        map.TilesetPlan.Tiles ??= [];
+        map.TilesetPlan.Advanced ??= new TilesetAdvancedPlanDefinition();
+        map.TilesetPlan.Advanced.WangSets ??= [];
         NormalizeTilesetRegions(map.TilesetPlan);
+        NormalizeTilesetTileMetadata(map.TilesetPlan);
+        NormalizeTilesetAdvancedPlan(map.TilesetPlan.Advanced);
         map.Terrains ??= [];
         map.Layers ??= [];
 
@@ -104,6 +110,16 @@ public static class MapDefaults
             terrain.AnimationFps = Math.Clamp(terrain.AnimationFps <= 0 ? 4 : terrain.AnimationFps, 1, 30);
             terrain.TileX = terrain.TileX < -1 ? -1 : terrain.TileX;
             terrain.TileY = terrain.TileY < -1 ? -1 : terrain.TileY;
+            terrain.Frames ??= [];
+            for (var frameIndex = terrain.Frames.Count - 1; frameIndex >= 0; frameIndex--)
+            {
+                var frame = terrain.Frames[frameIndex];
+                frame.DurationMs = Math.Clamp(frame.DurationMs <= 0 ? 100 : frame.DurationMs, 16, 2000);
+                if (frame.TileX < 0 || frame.TileY < 0)
+                {
+                    terrain.Frames.RemoveAt(frameIndex);
+                }
+            }
         }
 
         foreach (var layer in map.Layers)
@@ -186,11 +202,195 @@ public static class MapDefaults
             region.Y = Math.Max(0, region.Y);
             region.Width = Math.Max(1, region.Width);
             region.Height = Math.Max(1, region.Height);
+            region.AnimationFrameDurationMs = Math.Clamp(region.AnimationFrameDurationMs <= 0 ? 100 : region.AnimationFrameDurationMs, 16, 2000);
+            region.AnimationFrames ??= [];
+            for (var frameIndex = region.AnimationFrames.Count - 1; frameIndex >= 0; frameIndex--)
+            {
+                var frame = region.AnimationFrames[frameIndex];
+                frame.DurationMs = Math.Clamp(frame.DurationMs <= 0 ? region.AnimationFrameDurationMs : frame.DurationMs, 16, 2000);
+                if (frame.TileX < 0 || frame.TileY < 0)
+                {
+                    region.AnimationFrames.RemoveAt(frameIndex);
+                }
+            }
             if (!seen.Add(region.Id))
             {
                 plan.Regions.RemoveAt(index);
             }
         }
+    }
+
+    private static void NormalizeTilesetAdvancedPlan(TilesetAdvancedPlanDefinition advanced)
+    {
+        var seenSets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var setIndex = advanced.WangSets.Count - 1; setIndex >= 0; setIndex--)
+        {
+            var set = advanced.WangSets[setIndex];
+            set.Id = string.IsNullOrWhiteSpace(set.Id) ? $"wangset.{Guid.NewGuid():N}" : set.Id.Trim();
+            set.Name = string.IsNullOrWhiteSpace(set.Name) ? set.Id : set.Name.Trim();
+            set.Type = NormalizeWangSetType(set.Type);
+            set.TileX = set.TileX < -1 ? -1 : set.TileX;
+            set.TileY = set.TileY < -1 ? -1 : set.TileY;
+            set.Colors ??= [];
+            set.Tiles ??= [];
+            if (!seenSets.Add(set.Id))
+            {
+                advanced.WangSets.RemoveAt(setIndex);
+                continue;
+            }
+
+            NormalizeWangColors(set);
+            NormalizeWangTiles(set);
+        }
+    }
+
+    private static void NormalizeTilesetTileMetadata(TilesetPlanDefinition plan)
+    {
+        var seen = new HashSet<(int X, int Y)>();
+        for (var index = plan.Tiles.Count - 1; index >= 0; index--)
+        {
+            var tile = plan.Tiles[index];
+            tile.TileX = Math.Max(0, tile.TileX);
+            tile.TileY = Math.Max(0, tile.TileY);
+            tile.DisplayName ??= string.Empty;
+            tile.Category ??= string.Empty;
+            if (tile.MoveCost is { } moveCost)
+            {
+                tile.MoveCost = Math.Clamp(moveCost <= 0 ? 1d : moveCost, 0.01d, 999d);
+            }
+            tile.MaterialTag ??= string.Empty;
+            tile.FootstepSoundId ??= string.Empty;
+            tile.Tags = tile.Tags?
+                .Where(tag => !string.IsNullOrWhiteSpace(tag))
+                .Select(tag => tag.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList() ?? [];
+            tile.CustomProperties = tile.CustomProperties?
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Key))
+                .ToDictionary(pair => pair.Key.Trim(), pair => pair.Value ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                ?? [];
+            tile.CollisionShapes ??= [];
+            NormalizeTileCollisionShapes(tile);
+            if (!seen.Add((tile.TileX, tile.TileY)))
+            {
+                plan.Tiles.RemoveAt(index);
+            }
+        }
+    }
+
+    private static void NormalizeTileCollisionShapes(TilesetTileMetadataDefinition tile)
+    {
+        for (var index = tile.CollisionShapes.Count - 1; index >= 0; index--)
+        {
+            var shape = tile.CollisionShapes[index];
+            shape.ShapeType = NormalizeCollisionShapeType(shape.ShapeType);
+            shape.X = Math.Clamp(shape.X, 0f, 1f);
+            shape.Y = Math.Clamp(shape.Y, 0f, 1f);
+            shape.Width = Math.Clamp(shape.Width <= 0f ? 1f : shape.Width, 0.01f, 1f);
+            shape.Height = Math.Clamp(shape.Height <= 0f ? 1f : shape.Height, 0.01f, 1f);
+            shape.Tag ??= string.Empty;
+            shape.Points ??= [];
+            foreach (var point in shape.Points)
+            {
+                point.X = Math.Clamp(point.X, 0f, 1f);
+                point.Y = Math.Clamp(point.Y, 0f, 1f);
+            }
+
+            if (shape.ShapeType == TileCollisionShapeTypes.Polygon && shape.Points.Count < 3)
+            {
+                tile.CollisionShapes.RemoveAt(index);
+            }
+        }
+    }
+
+    private static string NormalizeCollisionShapeType(string? shapeType)
+    {
+        if (string.Equals(shapeType, TileCollisionShapeTypes.Ellipse, StringComparison.OrdinalIgnoreCase))
+        {
+            return TileCollisionShapeTypes.Ellipse;
+        }
+
+        if (string.Equals(shapeType, TileCollisionShapeTypes.Polygon, StringComparison.OrdinalIgnoreCase))
+        {
+            return TileCollisionShapeTypes.Polygon;
+        }
+
+        return TileCollisionShapeTypes.Rectangle;
+    }
+
+    private static void NormalizeWangColors(TilesetWangSetDefinition set)
+    {
+        var seenIndexes = new HashSet<int>();
+        for (var index = set.Colors.Count - 1; index >= 0; index--)
+        {
+            var color = set.Colors[index];
+            color.Index = Math.Max(1, color.Index);
+            color.Name = string.IsNullOrWhiteSpace(color.Name) ? $"颜色 {color.Index}" : color.Name.Trim();
+            color.ColorHex = string.IsNullOrWhiteSpace(color.ColorHex) ? "#22c55e" : color.ColorHex.Trim();
+            color.Probability = Math.Clamp(color.Probability <= 0d ? 1d : color.Probability, 0d, 999d);
+            color.TileX = color.TileX < -1 ? -1 : color.TileX;
+            color.TileY = color.TileY < -1 ? -1 : color.TileY;
+            if (!seenIndexes.Add(color.Index))
+            {
+                set.Colors.RemoveAt(index);
+            }
+        }
+
+        if (set.Colors.Count <= 0)
+        {
+            set.Colors.Add(new TilesetWangColorDefinition
+            {
+                Index = 1,
+                Name = "地形",
+                ColorHex = "#22c55e"
+            });
+        }
+
+        set.Colors = set.Colors.OrderBy(v => v.Index).ToList();
+    }
+
+    private static void NormalizeWangTiles(TilesetWangSetDefinition set)
+    {
+        var colorIndexes = set.Colors.Select(v => v.Index).ToHashSet();
+        var seenTiles = new HashSet<(int X, int Y)>();
+        for (var index = set.Tiles.Count - 1; index >= 0; index--)
+        {
+            var tile = set.Tiles[index];
+            tile.TileX = Math.Max(0, tile.TileX);
+            tile.TileY = Math.Max(0, tile.TileY);
+            tile.Probability = Math.Clamp(tile.Probability <= 0d ? 1d : tile.Probability, 0d, 999d);
+            tile.WangId ??= [];
+            while (tile.WangId.Count < 8)
+            {
+                tile.WangId.Add(0);
+            }
+
+            if (tile.WangId.Count > 8)
+            {
+                tile.WangId = tile.WangId.Take(8).ToList();
+            }
+
+            for (var valueIndex = 0; valueIndex < tile.WangId.Count; valueIndex++)
+            {
+                var value = tile.WangId[valueIndex];
+                tile.WangId[valueIndex] = value > 0 && colorIndexes.Contains(value) ? value : 0;
+            }
+
+            if (tile.WangId.All(v => v == 0) || !seenTiles.Add((tile.TileX, tile.TileY)))
+            {
+                set.Tiles.RemoveAt(index);
+            }
+        }
+    }
+
+    private static string NormalizeWangSetType(string? type)
+    {
+        return type?.Trim().ToLowerInvariant() switch
+        {
+            TilesetWangSetTypes.Corner => TilesetWangSetTypes.Corner,
+            TilesetWangSetTypes.Edge => TilesetWangSetTypes.Edge,
+            _ => TilesetWangSetTypes.Mixed
+        };
     }
 
     private static string NormalizeTilesetRegionKind(string? kind)
@@ -218,6 +418,11 @@ public static class MapDefaults
         if (string.Equals(kind, TilesetRegionKinds.Ignored, StringComparison.OrdinalIgnoreCase))
         {
             return TilesetRegionKinds.Ignored;
+        }
+
+        if (string.Equals(kind, TilesetRegionKinds.Hidden, StringComparison.OrdinalIgnoreCase))
+        {
+            return TilesetRegionKinds.Hidden;
         }
 
         return TilesetRegionKinds.Normal;

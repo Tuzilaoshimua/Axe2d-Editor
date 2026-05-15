@@ -44,6 +44,10 @@ public sealed class TilesetPlanDefinition
     public string RpgMakerLayout { get; set; } = RpgMakerTilesetLayouts.Standard;
 
     public List<TilesetRegionDefinition> Regions { get; set; } = [];
+
+    public List<TilesetTileMetadataDefinition> Tiles { get; set; } = [];
+
+    public TilesetAdvancedPlanDefinition Advanced { get; set; } = new();
 }
 
 public sealed class TilesetRegionDefinition
@@ -63,6 +67,79 @@ public sealed class TilesetRegionDefinition
     public int Width { get; set; } = 1;
 
     public int Height { get; set; } = 1;
+
+    public bool Animated { get; set; }
+
+    public int AnimationFrameDurationMs { get; set; } = 100;
+
+    public List<TilesetFrameDefinition> AnimationFrames { get; set; } = [];
+}
+
+public sealed class TilesetFrameDefinition
+{
+    public int TileX { get; set; }
+
+    public int TileY { get; set; }
+
+    public int DurationMs { get; set; } = 100;
+}
+
+public sealed class TilesetTileMetadataDefinition
+{
+    public int TileX { get; set; }
+
+    public int TileY { get; set; }
+
+    public string DisplayName { get; set; } = "";
+
+    public string Category { get; set; } = "";
+
+    public bool Walkable { get; set; } = true;
+
+    public bool BlocksSight { get; set; }
+
+    public double? MoveCost { get; set; }
+
+    public string MaterialTag { get; set; } = "";
+
+    public string FootstepSoundId { get; set; } = "";
+
+    public List<string> Tags { get; set; } = [];
+
+    public Dictionary<string, string> CustomProperties { get; set; } = [];
+
+    public List<TileCollisionShapeDefinition> CollisionShapes { get; set; } = [];
+}
+
+public sealed class TileCollisionShapeDefinition
+{
+    public string ShapeType { get; set; } = TileCollisionShapeTypes.Rectangle;
+
+    public float X { get; set; }
+
+    public float Y { get; set; }
+
+    public float Width { get; set; } = 1f;
+
+    public float Height { get; set; } = 1f;
+
+    public List<TileCollisionPointDefinition> Points { get; set; } = [];
+
+    public string Tag { get; set; } = "";
+}
+
+public sealed class TileCollisionPointDefinition
+{
+    public float X { get; set; }
+
+    public float Y { get; set; }
+}
+
+public static class TileCollisionShapeTypes
+{
+    public const string Rectangle = "Rectangle";
+    public const string Ellipse = "Ellipse";
+    public const string Polygon = "Polygon";
 }
 
 public static class TilesetRegionKinds
@@ -72,7 +149,9 @@ public static class TilesetRegionKinds
     public const string RpgMakerA2 = "RpgMakerA2";
     public const string RpgMakerA3 = "RpgMakerA3";
     public const string RpgMakerA4 = "RpgMakerA4";
+    public const string AdvancedWang = "AdvancedWang";
     public const string Ignored = "Ignored";
+    public const string Hidden = "Hidden";
 }
 
 public static class RpgMakerA1RegionVariants
@@ -95,6 +174,69 @@ public static class TilesetPlanModes
     public const string Normal = "Normal";
     public const string RpgMaker = "RpgMaker";
     public const string Advanced = "Advanced";
+}
+
+public sealed class TilesetAdvancedPlanDefinition
+{
+    public List<TilesetWangSetDefinition> WangSets { get; set; } = [];
+
+    public bool AllowFlipHorizontally { get; set; }
+
+    public bool AllowFlipVertically { get; set; }
+
+    public bool AllowRotate { get; set; }
+
+    public bool PreferUntransformedTiles { get; set; } = true;
+}
+
+public sealed class TilesetWangSetDefinition
+{
+    public string Id { get; set; } = "";
+
+    public string Name { get; set; } = "";
+
+    public string Type { get; set; } = TilesetWangSetTypes.Mixed;
+
+    public int TileX { get; set; } = -1;
+
+    public int TileY { get; set; } = -1;
+
+    public List<TilesetWangColorDefinition> Colors { get; set; } = [];
+
+    public List<TilesetWangTileDefinition> Tiles { get; set; } = [];
+}
+
+public sealed class TilesetWangColorDefinition
+{
+    public int Index { get; set; } = 1;
+
+    public string Name { get; set; } = "";
+
+    public string ColorHex { get; set; } = "#22c55e";
+
+    public double Probability { get; set; } = 1d;
+
+    public int TileX { get; set; } = -1;
+
+    public int TileY { get; set; } = -1;
+}
+
+public sealed class TilesetWangTileDefinition
+{
+    public int TileX { get; set; }
+
+    public int TileY { get; set; }
+
+    public List<int> WangId { get; set; } = [0, 0, 0, 0, 0, 0, 0, 0];
+
+    public double Probability { get; set; } = 1d;
+}
+
+public static class TilesetWangSetTypes
+{
+    public const string Corner = "corner";
+    public const string Edge = "edge";
+    public const string Mixed = "mixed";
 }
 
 public static class RpgMakerTilesetLayouts
@@ -133,6 +275,10 @@ public sealed class MapTerrainDefinition
     public int TileX { get; set; } = -1;
 
     public int TileY { get; set; } = -1;
+
+    public List<TilesetFrameDefinition> Frames { get; set; } = [];
+
+    public int AnimationFrameDurationMs { get; set; } = 100;
 }
 
 public sealed class MapLayerDefinition

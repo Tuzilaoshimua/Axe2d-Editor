@@ -95,7 +95,9 @@ public sealed class TilesetPalettePanel : Panel
                 Mode = plan.Mode,
                 RpgMakerKind = plan.RpgMakerKind,
                 RpgMakerLayout = plan.RpgMakerLayout,
-                Regions = CloneRegions(plan.Regions)
+                Regions = CloneRegions(plan.Regions),
+                Tiles = CloneTiles(plan.Tiles),
+                Advanced = CloneAdvanced(plan.Advanced)
             };
         _plannedRegions = _tilesetPlan?.Regions ?? [];
         RebuildFoldedEntries();
@@ -142,7 +144,7 @@ public sealed class TilesetPalettePanel : Panel
             return;
         }
 
-        if (UseFoldedRpgAutoPalette())
+        if (UseFoldedPalette())
         {
             var cell = HitFoldedCell(e.Location);
             if (cell.X < 0 || cell.Y < 0)
@@ -159,7 +161,7 @@ public sealed class TilesetPalettePanel : Panel
         }
 
         var tile = HitTile(e.Location);
-        if (IsIgnoredTile(tile))
+        if (IsUnavailableTile(tile))
         {
             return;
         }
@@ -173,7 +175,7 @@ public sealed class TilesetPalettePanel : Panel
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (_foldedDragSelecting && UseFoldedRpgAutoPalette())
+        if (_foldedDragSelecting && UseFoldedPalette())
         {
             var cell = HitFoldedCell(e.Location);
             if (cell.X < 0 || cell.Y < 0)
@@ -191,7 +193,7 @@ public sealed class TilesetPalettePanel : Panel
             return;
         }
 
-        if (!_dragSelecting || _image is null || UseFoldedRpgAutoPalette())
+        if (!_dragSelecting || _image is null || UseFoldedPalette())
         {
             return;
         }
@@ -307,7 +309,7 @@ public sealed class TilesetPalettePanel : Panel
             return;
         }
 
-        if (UseFoldedRpgAutoPalette())
+        if (UseFoldedPalette())
         {
             DrawFoldedRpgAutoPalette(g);
             return;
@@ -344,7 +346,12 @@ public sealed class TilesetPalettePanel : Panel
             _selectedTile = entry.Tile;
             _selectedTileSize = entry.SourceSize;
             _foldedSelectionRect = Rectangle.Empty;
-            TileSelected?.Invoke(this, new TilesetTileSelectedEventArgs(entry.Tile.X, entry.Tile.Y, entry.SourceSize.Width, entry.SourceSize.Height));
+            TileSelected?.Invoke(this, new TilesetTileSelectedEventArgs(
+                entry.Tile.X,
+                entry.Tile.Y,
+                entry.SourceSize.Width,
+                entry.SourceSize.Height,
+                isAdvancedTerrainPattern: IsAdvancedWangEntry(entry.Kind)));
             Invalidate();
             return;
         }
@@ -382,7 +389,8 @@ public sealed class TilesetPalettePanel : Panel
             _selectedTileSize.Width,
             _selectedTileSize.Height,
             preferTilesetBrush: true,
-            pattern: pattern));
+            pattern: pattern,
+            isAdvancedTerrainPattern: entries.All(entry => IsAdvancedWangEntry(entry.Kind))));
         Invalidate();
     }
 
@@ -414,6 +422,7 @@ public sealed class TilesetPalettePanel : Panel
                 g.DrawImage(_image!, dest, source, GraphicsUnit.Pixel);
             }
             DrawFoldedEntryFrame(g, dest, entry);
+            DrawTileMetadataBadge(g, dest, entry.Tile);
         }
 
         DrawFoldedDragSelection(g, offset);
@@ -422,7 +431,11 @@ public sealed class TilesetPalettePanel : Panel
         {
             using var brush = new SolidBrush(Color.FromArgb(190, 190, 190));
             using var font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
-            const string text = "RM 自动元件尚未生成区域";
+            var text = UseAdvancedWangPalette()
+                ? "高级自动地形尚未标记瓦片"
+                : UseCompactHiddenPalette() && !UseFoldedRpgAutoPalette()
+                    ? "没有可显示的瓦片"
+                    : "RM 自动元件尚未生成区域";
             var size = g.MeasureString(text, font);
             g.DrawString(text, font, brush, (Width - size.Width) / 2f, (Height - size.Height) / 2f);
         }
@@ -469,7 +482,7 @@ public sealed class TilesetPalettePanel : Panel
         using var gridPen = new Pen(Color.FromArgb(120, 255, 255, 255));
         g.DrawRectangle(gridPen, rect);
 
-        if (IsRpgAutoRegionKind(entry.Kind) && !IsA4RegionKind(entry.Kind))
+        if ((IsRpgAutoRegionKind(entry.Kind) || IsAdvancedWangEntry(entry.Kind)) && !IsA4RegionKind(entry.Kind))
         {
             using var tagBack = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
             using var tagBrush = new SolidBrush(Color.White);
@@ -499,6 +512,25 @@ public sealed class TilesetPalettePanel : Panel
             g.FillRectangle(fill, rect);
             g.DrawRectangle(pen, rect);
         }
+    }
+
+    private void DrawTileMetadataBadge(Graphics g, Rectangle rect, Point tile)
+    {
+        var metadata = TilesetTileMetadataResolver.Find(_tilesetPlan, tile.X, tile.Y);
+        if (metadata is null)
+        {
+            return;
+        }
+
+        var hasCollision = metadata.CollisionShapes.Count > 0;
+        var text = hasCollision ? "C" : "A";
+        var color = hasCollision ? Color.FromArgb(220, 200, 48, 48) : Color.FromArgb(220, 45, 105, 200);
+        using var backBrush = new SolidBrush(color);
+        using var textBrush = new SolidBrush(Color.White);
+        using var font = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold);
+        var badge = new Rectangle(rect.Right - 17, rect.Top + 3, 14, 14);
+        g.FillRectangle(backBrush, badge);
+        g.DrawString(text, font, textBrush, badge.Left + 3, badge.Top + 1);
     }
 
     private void DrawWaterfallPreview(Graphics g, Rectangle dest, Point previewTile)
@@ -574,6 +606,7 @@ public sealed class TilesetPalettePanel : Panel
             _selectedTileSize.Height * _tileSize);
         g.FillRectangle(fill, rect);
         g.DrawRectangle(pen, rect);
+        DrawTileMetadataBadge(g, rect, _selectedTile);
     }
 
     private void DrawPlannedRegions(Graphics g, Point offset)
@@ -581,6 +614,11 @@ public sealed class TilesetPalettePanel : Panel
         foreach (var region in _plannedRegions)
         {
             if (region.Width <= 0 || region.Height <= 0)
+            {
+                continue;
+            }
+
+            if (string.Equals(region.Kind, TilesetRegionKinds.Hidden, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -596,6 +634,32 @@ public sealed class TilesetPalettePanel : Panel
             g.FillRectangle(fill, rect);
             g.DrawRectangle(pen, rect);
             DrawRegionLabel(g, rect, region.Kind);
+        }
+
+        DrawNormalMetadataBadges(g, offset);
+    }
+
+    private void DrawNormalMetadataBadges(Graphics g, Point offset)
+    {
+        if (_tilesetPlan?.Tiles is not { Count: > 0 })
+        {
+            return;
+        }
+
+        foreach (var metadata in _tilesetPlan.Tiles)
+        {
+            var tile = new Point(metadata.TileX, metadata.TileY);
+            if (IsUnavailableTile(tile))
+            {
+                continue;
+            }
+
+            var rect = new Rectangle(
+                offset.X + metadata.TileX * _tileSize,
+                offset.Y + metadata.TileY * _tileSize,
+                _tileSize,
+                _tileSize);
+            DrawTileMetadataBadge(g, rect, tile);
         }
     }
 
@@ -617,10 +681,11 @@ public sealed class TilesetPalettePanel : Panel
         g.DrawRectangle(pen, rect);
     }
 
-    private bool IsIgnoredTile(Point tile)
+    private bool IsUnavailableTile(Point tile)
     {
         return _plannedRegions.Any(region =>
-            string.Equals(region.Kind, TilesetRegionKinds.Ignored, StringComparison.OrdinalIgnoreCase)
+            (string.Equals(region.Kind, TilesetRegionKinds.Ignored, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(region.Kind, TilesetRegionKinds.Hidden, StringComparison.OrdinalIgnoreCase))
             && tile.X >= region.X
             && tile.Y >= region.Y
             && tile.X < region.X + region.Width
@@ -631,7 +696,7 @@ public sealed class TilesetPalettePanel : Panel
     {
         _foldedEntries = [];
         _foldedSelectionRect = Rectangle.Empty;
-        if (_image is null || !UseFoldedRpgAutoPalette())
+        if (_image is null || !UseFoldedPalette())
         {
             AutoScrollMinSize = _image is null ? Size.Empty : new Size(_image.Width + 1, _image.Height + 1);
             return;
@@ -639,6 +704,18 @@ public sealed class TilesetPalettePanel : Panel
 
         var imageColumns = Math.Max(1, _image.Width / _tileSize);
         var imageRows = Math.Max(1, _image.Height / _tileSize);
+        if (UseAdvancedWangPalette())
+        {
+            RebuildAdvancedWangEntries(imageColumns, imageRows);
+            return;
+        }
+
+        if (UseCompactHiddenPalette() && !UseFoldedRpgAutoPalette())
+        {
+            RebuildCompactNormalEntries(imageColumns, imageRows);
+            return;
+        }
+
         _foldedColumns = Math.Max(1, imageColumns / 2);
         var autoRegions = _plannedRegions
             .Where(IsRpgAutoRegion)
@@ -695,6 +772,11 @@ public sealed class TilesetPalettePanel : Panel
             {
                 for (var x = Math.Max(0, region.X); x < region.X + region.Width && x < imageColumns; x++)
                 {
+                    if (IsUnavailableTile(new Point(x, y)))
+                    {
+                        continue;
+                    }
+
                     yield return new Point(x, y);
                 }
             }
@@ -738,6 +820,102 @@ public sealed class TilesetPalettePanel : Panel
             && _plannedRegions.Any(IsRpgAutoRegion);
     }
 
+    private bool UseFoldedPalette()
+    {
+        return UseAdvancedWangPalette() || UseFoldedRpgAutoPalette() || UseCompactHiddenPalette();
+    }
+
+    private bool UseCompactHiddenPalette()
+    {
+        return _plannedRegions.Any(region => string.Equals(region.Kind, TilesetRegionKinds.Hidden, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void RebuildCompactNormalEntries(int imageColumns, int imageRows)
+    {
+        _foldedColumns = Math.Max(1, imageColumns);
+        var column = 0;
+        var row = 0;
+        for (var y = 0; y < imageRows; y++)
+        {
+            for (var x = 0; x < imageColumns; x++)
+            {
+                var tile = new Point(x, y);
+                if (IsUnavailableTile(tile))
+                {
+                    continue;
+                }
+
+                if (column >= _foldedColumns)
+                {
+                    column = 0;
+                    row++;
+                }
+
+                _foldedEntries.Add(new TilesetPaletteEntry(
+                    tile,
+                    tile,
+                    new Size(1, 1),
+                    TilesetRegionKinds.Normal,
+                    string.Empty,
+                    EntryRect(column, row, 1, 1),
+                    false));
+                column++;
+            }
+        }
+
+        var contentRight = _foldedEntries.Count == 0 ? _tileSize : _foldedEntries.Max(v => v.DisplayRect.Right);
+        var contentBottom = _foldedEntries.Count == 0 ? _tileSize : _foldedEntries.Max(v => v.DisplayRect.Bottom);
+        AutoScrollMinSize = new Size(contentRight + 1, contentBottom + 1);
+    }
+
+    private bool UseAdvancedWangPalette()
+    {
+        return _tilesetPlan is not null
+            && string.Equals(_tilesetPlan.Mode, TilesetPlanModes.Advanced, StringComparison.OrdinalIgnoreCase)
+            && _tilesetPlan.Advanced?.WangSets?.Any(set => set.Tiles.Count > 0) == true;
+    }
+
+    private void RebuildAdvancedWangEntries(int imageColumns, int imageRows)
+    {
+        _foldedColumns = Math.Max(1, imageColumns);
+        var column = 0;
+        var row = 0;
+        foreach (var set in _tilesetPlan!.Advanced.WangSets)
+        {
+            foreach (var tile in set.Tiles.OrderBy(v => v.TileY).ThenBy(v => v.TileX))
+            {
+                if (tile.TileX < 0 || tile.TileY < 0 || tile.TileX >= imageColumns || tile.TileY >= imageRows)
+                {
+                    continue;
+                }
+
+                if (column >= _foldedColumns)
+                {
+                    column = 0;
+                    row++;
+                }
+
+                _foldedEntries.Add(new TilesetPaletteEntry(
+                    new Point(tile.TileX, tile.TileY),
+                    new Point(tile.TileX, tile.TileY),
+                    new Size(1, 1),
+                    TilesetRegionKinds.AdvancedWang,
+                    set.Id,
+                    EntryRect(column, row, 1, 1),
+                    false));
+                column++;
+            }
+        }
+
+        if (_foldedEntries.Count <= 0)
+        {
+            AutoScrollMinSize = new Size(_tileSize + 1, _tileSize + 1);
+            return;
+        }
+
+        AutoScrollMinSize = new Size(_foldedEntries.Max(v => v.DisplayRect.Right) + 1, _foldedEntries.Max(v => v.DisplayRect.Bottom) + 1);
+    }
+
     private static int FoldedSortGroup(TilesetRegionDefinition region)
     {
         if (!string.Equals(region.Kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase))
@@ -779,6 +957,11 @@ public sealed class TilesetPalettePanel : Panel
             || string.Equals(kind, TilesetRegionKinds.RpgMakerA2, StringComparison.OrdinalIgnoreCase)
             || string.Equals(kind, TilesetRegionKinds.RpgMakerA3, StringComparison.OrdinalIgnoreCase)
             || string.Equals(kind, TilesetRegionKinds.RpgMakerA4, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAdvancedWangEntry(string kind)
+    {
+        return string.Equals(kind, TilesetRegionKinds.AdvancedWang, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsA4RegionKind(string kind)
@@ -833,6 +1016,11 @@ public sealed class TilesetPalettePanel : Panel
 
     private static string EntryLabel(string kind, string variant)
     {
+        if (IsAdvancedWangEntry(kind))
+        {
+            return "高级";
+        }
+
         if (string.Equals(kind, TilesetRegionKinds.RpgMakerA1, StringComparison.OrdinalIgnoreCase))
         {
             return A1EntryLabel(variant);
@@ -870,6 +1058,94 @@ public sealed class TilesetPalettePanel : Panel
             .ToList() ?? [];
     }
 
+    private static List<TilesetTileMetadataDefinition> CloneTiles(IEnumerable<TilesetTileMetadataDefinition>? tiles)
+    {
+        return tiles?
+            .Select(tile => new TilesetTileMetadataDefinition
+            {
+                TileX = tile.TileX,
+                TileY = tile.TileY,
+                DisplayName = tile.DisplayName,
+                Category = tile.Category,
+                Walkable = tile.Walkable,
+                BlocksSight = tile.BlocksSight,
+                MoveCost = tile.MoveCost,
+                MaterialTag = tile.MaterialTag,
+                FootstepSoundId = tile.FootstepSoundId,
+                Tags = tile.Tags?.ToList() ?? [],
+                CustomProperties = tile.CustomProperties is null
+                    ? []
+                    : new Dictionary<string, string>(tile.CustomProperties, StringComparer.OrdinalIgnoreCase),
+                CollisionShapes = tile.CollisionShapes?
+                    .Select(shape => new TileCollisionShapeDefinition
+                    {
+                        ShapeType = shape.ShapeType,
+                        X = shape.X,
+                        Y = shape.Y,
+                        Width = shape.Width,
+                        Height = shape.Height,
+                        Tag = shape.Tag,
+                        Points = shape.Points?
+                            .Select(point => new TileCollisionPointDefinition { X = point.X, Y = point.Y })
+                            .ToList() ?? []
+                    })
+                    .ToList() ?? []
+            })
+            .ToList() ?? [];
+    }
+
+    private static TilesetAdvancedPlanDefinition CloneAdvanced(TilesetAdvancedPlanDefinition? advanced)
+    {
+        return new TilesetAdvancedPlanDefinition
+        {
+            AllowFlipHorizontally = advanced?.AllowFlipHorizontally ?? false,
+            AllowFlipVertically = advanced?.AllowFlipVertically ?? false,
+            AllowRotate = advanced?.AllowRotate ?? false,
+            PreferUntransformedTiles = advanced?.PreferUntransformedTiles ?? true,
+            WangSets = advanced?.WangSets?
+                .Select(set => new TilesetWangSetDefinition
+                {
+                    Id = set.Id,
+                    Name = set.Name,
+                    Type = set.Type,
+                    TileX = set.TileX,
+                    TileY = set.TileY,
+                    Colors = set.Colors?
+                        .Select(color => new TilesetWangColorDefinition
+                        {
+                            Index = color.Index,
+                            Name = color.Name,
+                            ColorHex = color.ColorHex,
+                            Probability = color.Probability,
+                            TileX = color.TileX,
+                            TileY = color.TileY
+                        })
+                        .ToList() ?? [],
+                    Tiles = set.Tiles?
+                        .Select(tile => new TilesetWangTileDefinition
+                        {
+                            TileX = tile.TileX,
+                            TileY = tile.TileY,
+                            Probability = tile.Probability,
+                            WangId = NormalizeWangId(tile.WangId)
+                        })
+                        .ToList() ?? []
+                })
+                .ToList() ?? []
+        };
+    }
+
+    private static List<int> NormalizeWangId(IReadOnlyList<int>? wangId)
+    {
+        var result = wangId?.Take(8).ToList() ?? [];
+        while (result.Count < 8)
+        {
+            result.Add(0);
+        }
+
+        return result;
+    }
+
     private static Color RegionColor(string kind)
     {
         return kind switch
@@ -878,7 +1154,9 @@ public sealed class TilesetPalettePanel : Panel
             TilesetRegionKinds.RpgMakerA2 => Color.FromArgb(255, 229, 126, 32),
             TilesetRegionKinds.RpgMakerA3 => Color.FromArgb(255, 186, 104, 200),
             TilesetRegionKinds.RpgMakerA4 => Color.FromArgb(255, 121, 134, 203),
+            TilesetRegionKinds.AdvancedWang => Color.FromArgb(255, 34, 197, 94),
             TilesetRegionKinds.Ignored => Color.FromArgb(255, 150, 150, 150),
+            TilesetRegionKinds.Hidden => Color.FromArgb(255, 96, 125, 139),
             _ => Color.FromArgb(255, 38, 166, 91)
         };
     }
@@ -901,7 +1179,11 @@ public sealed class TilesetPalettePanel : Panel
                     ? "A3"
                     : kind == TilesetRegionKinds.RpgMakerA4
                         ? "A4"
-                        : kind == TilesetRegionKinds.Ignored ? "忽略" : "普通";
+                        : kind == TilesetRegionKinds.AdvancedWang
+                            ? "高级"
+                        : kind == TilesetRegionKinds.Ignored
+                            ? "忽略"
+                            : kind == TilesetRegionKinds.Hidden ? "隐藏" : "普通";
         var size = g.MeasureString(text, font);
         var labelRect = new RectangleF(rect.Left + 4, rect.Top + 4, size.Width + 8, size.Height + 4);
         g.FillRectangle(backBrush, labelRect);
@@ -919,7 +1201,8 @@ public sealed class TilesetTileSelectedEventArgs : EventArgs
         int width = 1,
         int height = 1,
         bool preferTilesetBrush = false,
-        IReadOnlyList<TilesetBrushCell>? pattern = null)
+        IReadOnlyList<TilesetBrushCell>? pattern = null,
+        bool isAdvancedTerrainPattern = false)
     {
         TileX = tileX;
         TileY = tileY;
@@ -927,6 +1210,7 @@ public sealed class TilesetTileSelectedEventArgs : EventArgs
         Height = Math.Max(1, height);
         PreferTilesetBrush = preferTilesetBrush;
         Pattern = pattern;
+        IsAdvancedTerrainPattern = isAdvancedTerrainPattern;
     }
 
     public int TileX { get; }
@@ -940,4 +1224,6 @@ public sealed class TilesetTileSelectedEventArgs : EventArgs
     public bool PreferTilesetBrush { get; }
 
     public IReadOnlyList<TilesetBrushCell>? Pattern { get; }
+
+    public bool IsAdvancedTerrainPattern { get; }
 }

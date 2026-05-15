@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "Axe2DEditor/1.0.0": {
+        "runtime": {
+          "Axe2DEditor.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "Axe2DEditor/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

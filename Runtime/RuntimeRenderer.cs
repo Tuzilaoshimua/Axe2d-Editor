@@ -114,6 +114,14 @@ internal sealed class RuntimeRenderer
         graphics.DrawString($"相机: {session.CameraLabel}", smallFont, labelBrush, worldRect.Left + 12, worldRect.Top + 76);
         graphics.DrawString($"相机焦点: {session.CameraFocus.X:0.0}, {session.CameraFocus.Y:0.0}", smallFont, labelBrush, worldRect.Left + 12, worldRect.Top + 94);
         graphics.DrawString($"对象数: {session.SceneObjects.Count}", smallFont, labelBrush, worldRect.Left + 12, worldRect.Top + 112);
+        var tileInfo = session.GetTileInfoAtPlayer();
+        var tileName = tileInfo.Metadata is null
+            ? "未配置属性"
+            : string.IsNullOrWhiteSpace(tileInfo.Metadata.DisplayName) ? $"{tileInfo.X},{tileInfo.Y}" : tileInfo.Metadata.DisplayName;
+        var ruleName = string.IsNullOrWhiteSpace(tileInfo.TerrainRuleName) ? "无地形规则" : tileInfo.TerrainRuleName;
+        var moveCostSource = tileInfo.HasTileMoveCostOverride ? "瓦片覆盖" : "规则/默认";
+        graphics.DrawString($"脚下: {tileInfo.X},{tileInfo.Y} {tileName} | {ruleName} | MoveCost {tileInfo.MoveCost:0.##} ({moveCostSource})", smallFont, labelBrush, worldRect.Left + 12, worldRect.Top + 130);
+        graphics.DrawString($"最近阻挡: {session.LastMovementBlockReason}", smallFont, labelBrush, worldRect.Left + 12, worldRect.Top + 148);
     }
 
     private static void DrawMapLayers(Graphics graphics, MapDefinition map, RuntimeProjection projection)
@@ -125,7 +133,7 @@ internal sealed class RuntimeRenderer
         {
             if (layer.Kind.Equals("Tile", StringComparison.OrdinalIgnoreCase))
             {
-                DrawRuntimeTileLayer(graphics, layer, terrains, tilesetImage, map.TileSize, projection);
+                DrawRuntimeTileLayer(graphics, map, layer, terrains, tilesetImage, map.TileSize, projection);
             }
             else if (layer.Kind.Equals("Collision", StringComparison.OrdinalIgnoreCase))
             {
@@ -140,6 +148,7 @@ internal sealed class RuntimeRenderer
 
     private static void DrawRuntimeTileLayer(
         Graphics graphics,
+        MapDefinition map,
         MapLayerDefinition layer,
         Dictionary<string, MapTerrainDefinition> terrains,
         Image? tilesetImage,
@@ -158,6 +167,7 @@ internal sealed class RuntimeRenderer
 
             var rect = TileRect(tile.X, tile.Y, projection);
             var usesRpgMakerAutoTile = RpgMakerAutoTile.IsA1(terrain) || RpgMakerAutoTile.IsA2(terrain);
+            var usesWangAutoTile = WangAutoTile.IsWang(terrain);
             var animationFrame = Environment.TickCount / 160;
             var drawn = RpgMakerAutoTile.IsA1(terrain)
                 && terrain is not null
@@ -165,9 +175,12 @@ internal sealed class RuntimeRenderer
             drawn = drawn || (RpgMakerAutoTile.IsA2(terrain)
                 && terrain is not null
                 && RpgMakerAutoTile.DrawA2(graphics, tilesetImage, tileSize, rect, tile, terrain, lookup, layer.Opacity, animationFrame));
-            if (!drawn && !usesRpgMakerAutoTile)
+            drawn = drawn || (WangAutoTile.IsWang(terrain)
+                && terrain is not null
+                && WangAutoTile.Draw(graphics, tilesetImage, tileSize, rect, tile, terrain, map.TilesetPlan, lookup, layer.Opacity));
+            if (!drawn && !usesRpgMakerAutoTile && !usesWangAutoTile)
             {
-                drawn = DrawRuntimeTilesetTile(graphics, rect, tile, terrain, tilesetImage, tileSize, layer.Opacity);
+                drawn = DrawRuntimeTilesetTile(graphics, rect, tile, terrain, map.TilesetPlan, tilesetImage, tileSize, layer.Opacity, animationFrame * 160);
             }
 
             if (!drawn && terrain is not null)
@@ -222,9 +235,11 @@ internal sealed class RuntimeRenderer
         RectangleF rect,
         MapTileCell tile,
         MapTerrainDefinition? terrain,
+        TilesetPlanDefinition? plan,
         Image? tilesetImage,
         int tileSize,
-        float opacity)
+        float opacity,
+        int animationTimeMs)
     {
         if (tilesetImage is null || tileSize <= 0)
         {
@@ -236,6 +251,12 @@ internal sealed class RuntimeRenderer
         if (tileX < 0 || tileY < 0)
         {
             return false;
+        }
+
+        if (TilesetAnimationResolver.TryResolveFrame(terrain, plan, tileX, tileY, animationTimeMs, out var frameTile))
+        {
+            tileX = frameTile.X;
+            tileY = frameTile.Y;
         }
 
         var sourceX = tileX * tileSize;

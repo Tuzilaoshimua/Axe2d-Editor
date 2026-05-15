@@ -61,9 +61,11 @@ internal sealed class RuntimeSimulation
             return;
         }
 
-        _session.Player.X += dx;
-        _session.Player.Y += dy;
-        ClampPlayer();
+        if (!_session.TryMovePlayer(dx, dy))
+        {
+            return;
+        }
+
         _session.TriggerTouchEventsForPlayer();
         _session.TriggerAreaEventsForPlayer();
     }
